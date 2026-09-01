@@ -197,3 +197,93 @@ f 1/1 2/2 3/3 4/4
     CHECK(pixels[center] > 180);
     renderer.Shutdown();
 }
+
+TEST_CASE("WARP local X filter prevents mirrored UV sides from overwriting each other") {
+    HiddenWindow window;
+    REQUIRE(window.Get() != nullptr);
+
+    codextex::Renderer renderer;
+    std::string error;
+    REQUIRE(renderer.Initialize(window.Get(), error, true));
+
+    const auto directory = std::filesystem::temp_directory_path() / "codextex-tests";
+    std::filesystem::create_directories(directory);
+    const auto objPath = directory / "mirrored-local-x-quads.obj";
+    std::ofstream obj(objPath, std::ios::binary | std::ios::trunc);
+    obj << R"OBJ(
+v -1.8 -0.8 0
+v -0.2 -0.8 0
+v -0.2  0.8 0
+v -1.8  0.8 0
+v  0.2 -0.8 0
+v  1.8 -0.8 0
+v  1.8  0.8 0
+v  0.2  0.8 0
+vt 0 0
+vt 1 0
+vt 1 1
+vt 0 1
+f 1/1 2/2 3/3 4/4
+f 5/1 6/2 7/3 8/4
+)OBJ";
+    obj.close();
+
+    codextex::Mesh mesh;
+    REQUIRE(mesh.LoadObj(objPath, error));
+    REQUIRE(mesh.UvOverlapCount() > 0);
+    REQUIRE(renderer.SetMesh(mesh, error));
+
+    std::vector<std::uint8_t> basePixels(16 * 16 * 4, 255);
+    for (std::size_t i = 0; i < basePixels.size(); i += 4) {
+        basePixels[i] = 12;
+        basePixels[i + 1] = 24;
+        basePixels[i + 2] = 36;
+        basePixels[i + 3] = 91;
+    }
+    codextex::TextureImage base;
+    base.Assign(16, 16, basePixels);
+    REQUIRE(renderer.SetWorkingTexture(base, error));
+
+    codextex::CameraState camera;
+    camera.pitch = 0;
+    camera.distance = 5;
+    renderer.RenderViewport(256, 128, camera);
+    codextex::TextureImage capture;
+    REQUIRE(renderer.CaptureFrame(camera, capture, error));
+
+    std::vector<std::uint8_t> projectionPixels(256 * 128 * 4, 255);
+    for (std::uint32_t y = 0; y < 128; ++y) {
+        for (std::uint32_t x = 0; x < 256; ++x) {
+            const std::size_t pixel = (static_cast<std::size_t>(y) * 256 + x) * 4;
+            projectionPixels[pixel] = x < 128 ? 235 : 15;
+            projectionPixels[pixel + 1] = 20;
+            projectionPixels[pixel + 2] = x < 128 ? 15 : 235;
+        }
+    }
+    codextex::TextureImage projection;
+    projection.Assign(256, 128, projectionPixels);
+    REQUIRE(renderer.SetProjectionImage(projection, error));
+    codextex::MaskImage mask;
+    mask.Resize(256, 128, true);
+    renderer.SetMask(mask, 0);
+
+    renderer.SetLocalSideFilter(codextex::LocalSideFilter::IgnorePositiveX);
+    REQUIRE(renderer.BakeProjection(75, error));
+    codextex::TextureImage negativeSideBake;
+    REQUIRE(renderer.ReadWorkingTexture(negativeSideBake, error));
+    const std::size_t center = (8 * 16 + 8) * 4;
+    // From the default +Z camera, local -X is on the right half of the capture.
+    CHECK(negativeSideBake.Pixels()[center] < 60);
+    CHECK(negativeSideBake.Pixels()[center + 2] > 180);
+    CHECK(negativeSideBake.Pixels()[center + 3] == 91);
+
+    REQUIRE(renderer.SetWorkingTexture(base, error));
+    renderer.SetLocalSideFilter(codextex::LocalSideFilter::IgnoreNegativeX);
+    REQUIRE(renderer.BakeProjection(75, error));
+    codextex::TextureImage positiveSideBake;
+    REQUIRE(renderer.ReadWorkingTexture(positiveSideBake, error));
+    CHECK(positiveSideBake.Pixels()[center] > 180);
+    CHECK(positiveSideBake.Pixels()[center + 2] < 60);
+    CHECK(positiveSideBake.Pixels()[center + 3] == 91);
+    renderer.Shutdown();
+}

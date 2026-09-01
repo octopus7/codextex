@@ -20,6 +20,7 @@ struct ShaderConstants {
     float world[16]{};
     float cameraPosition[4]{};
     float parameters[4]{};
+    float sideFilter[4]{};
 };
 
 struct MaskConstants {
@@ -35,6 +36,7 @@ cbuffer Constants : register(b0) {
     row_major float4x4 world;
     float4 cameraPosition;
     float4 parameters;
+    float4 sideFilter;
 };
 Texture2D<float4> baseColor : register(t0);
 StructuredBuffer<uint> selectedFaces : register(t1);
@@ -54,6 +56,7 @@ struct VSOutput {
     float3 normal : TEXCOORD1;
     float2 uv : TEXCOORD2;
     nointerpolation uint triangleId : TEXCOORD3;
+    float3 localPosition : TEXCOORD4;
 };
 VSOutput VSMain(VSInput input) {
     VSOutput output;
@@ -63,6 +66,7 @@ VSOutput VSMain(VSInput input) {
     output.normal = normalize(mul(float4(input.normal, 0.0), world).xyz);
     output.uv = input.uv;
     output.triangleId = input.triangleId;
+    output.localPosition = input.position;
     return output;
 }
 struct PSOutput {
@@ -83,7 +87,11 @@ PSOutput PSMain(VSOutput input) {
         const float2 screenUv = input.position.xy / parameters.xy;
         const float mask = maskPreview.SampleLevel(linearSampler, screenUv, 0);
         const float3 projected = projectionPreview.SampleLevel(linearSampler, screenUv, 0).rgb;
-        color = lerp(color, projected, mask * 0.82);
+        const bool ignoreNegativeX = sideFilter.x > 0.5 && sideFilter.x < 1.5;
+        const bool ignorePositiveX = sideFilter.x > 1.5;
+        const bool sideAllowed = (!ignoreNegativeX || input.localPosition.x >= sideFilter.y) &&
+                                 (!ignorePositiveX || input.localPosition.x <= sideFilter.y);
+        if (sideAllowed) color = lerp(color, projected, mask * 0.82);
     }
     if (selectedFaces[input.triangleId] != 0) {
         color = lerp(color, float3(1.0, 0.55, 0.05), 0.55);
@@ -116,6 +124,7 @@ cbuffer Constants : register(b0) {
     row_major float4x4 world;
     float4 cameraPosition;
     float4 parameters;
+    float4 sideFilter;
 };
 Texture2D<float4> projectionImage : register(t0);
 Texture2D<float> capturedDepth : register(t1);
@@ -133,6 +142,7 @@ struct VSOutput {
     float4 captureClip : TEXCOORD0;
     float3 worldPosition : TEXCOORD1;
     float3 normal : TEXCOORD2;
+    float3 localPosition : TEXCOORD3;
 };
 VSOutput VSMain(VSInput input) {
     VSOutput output;
@@ -140,9 +150,12 @@ VSOutput VSMain(VSInput input) {
     output.captureClip = mul(float4(input.position, 1.0), worldViewProjection);
     output.worldPosition = mul(float4(input.position, 1.0), world).xyz;
     output.normal = normalize(mul(float4(input.normal, 0.0), world).xyz);
+    output.localPosition = input.position;
     return output;
 }
 float4 PSMain(VSOutput input) : SV_TARGET0 {
+    if (sideFilter.x > 0.5 && sideFilter.x < 1.5 && input.localPosition.x < sideFilter.y) discard;
+    if (sideFilter.x > 1.5 && input.localPosition.x > sideFilter.y) discard;
     if (input.captureClip.w <= 0.0) discard;
     const float3 ndc = input.captureClip.xyz / input.captureClip.w;
     const float2 screenUv = float2(ndc.x * 0.5 + 0.5, -ndc.y * 0.5 + 0.5);
@@ -467,6 +480,8 @@ bool Renderer::SetMesh(const Mesh& mesh, std::string& error) {
         error = "Mesh contains no vertices.";
         return false;
     }
+    localCenterX_ = (mesh.BoundsMin().x + mesh.BoundsMax().x) * 0.5f;
+    localSideFilter_ = LocalSideFilter::Both;
     D3D11_BUFFER_DESC desc{};
     desc.ByteWidth = static_cast<UINT>(vertices_.size() * sizeof(Vertex));
     desc.Usage = D3D11_USAGE_IMMUTABLE;
@@ -840,6 +855,8 @@ void Renderer::RenderViewport(const std::uint32_t width, const std::uint32_t hei
         constants.parameters[1] = static_cast<float>(height);
         constants.parameters[2] = projectionPreview_ && projectionSrv_ && maskSrv_ ? 1.0f : 0.0f;
         constants.parameters[3] = shadingEnabled_ ? 1.0f : 0.0f;
+        constants.sideFilter[0] = static_cast<float>(localSideFilter_);
+        constants.sideFilter[1] = localCenterX_;
         std::memcpy(mapped.pData, &constants, sizeof(constants));
         context_->Unmap(constants_.Get(), 0);
     }
@@ -988,6 +1005,8 @@ bool Renderer::BakeProjection(const float maxAngleDegrees, std::string& error) {
     constants.parameters[2] = std::cos(std::clamp(maxAngleDegrees, 0.0f, 89.9f) *
                                        std::numbers::pi_v<float> / 180.0f);
     constants.parameters[3] = 0.003f;
+    constants.sideFilter[0] = static_cast<float>(localSideFilter_);
+    constants.sideFilter[1] = localCenterX_;
     std::memcpy(mapped.pData, &constants, sizeof(constants));
     context_->Unmap(constants_.Get(), 0);
 

@@ -94,6 +94,7 @@ private:
     bool dockLayoutInitialized_{};
     bool imguiBackendsInitialized_{};
     float dpiScale_{1.0f};
+    LocalSideFilter localSideFilter_{LocalSideFilter::Both};
 
     std::vector<std::uint8_t> hiddenFaces_;
     std::vector<std::uint8_t> selectedFaces_;

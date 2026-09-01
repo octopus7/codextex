@@ -68,6 +68,12 @@ spacing, and the initial window size are rasterized at the monitor's native DPI,
 and are rebuilt after a `WM_DPICHANGED` monitor transition instead of relying on
 Windows bitmap scaling.
 
+For overlapping or mirrored UV layouts, `Mirrored UV side` can exclude either
+the OBJ's local `-X` or `+X` side from projection preview and baking. This stops
+the opposite projection from overwriting the same UV region. Because both model
+sides still sample shared texels, the resulting texture necessarily appears on
+both sides; separate left/right detail requires non-overlapping UV islands.
+
 Generated images are first produced by Codex's built-in ImageGen at its normal
 Codex-managed location. CodexTex consumes `imageGeneration.savedPath` and
 copies the selected image into its per-process session directory. That session

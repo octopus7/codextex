@@ -414,6 +414,7 @@ void Application::DrawTools() {
         if (mesh_.UvOverlapCount() > 0) {
             ImGui::TextColored(ImVec4(1, 0.65f, 0.2f, 1), "Warning: %zu overlapping UV pair(s)",
                                mesh_.UvOverlapCount());
+            ImGui::TextWrapped("Shared or mirrored UVs may let the opposite local-X side overwrite the bake.");
         }
     }
     if (textureLoaded_) {
@@ -531,6 +532,22 @@ void Application::DrawTools() {
         }
     }
     ImGui::SliderFloat("Max surface angle", &maxAngleDegrees_, 0.0f, 89.0f, "%.0f deg");
+    constexpr const char* sideFilterLabels[]{
+        "Paint both local-X sides",
+        "Ignore local -X side",
+        "Ignore local +X side",
+    };
+    int sideFilter = static_cast<int>(localSideFilter_);
+    ImGui::BeginDisabled(!meshLoaded_);
+    if (ImGui::Combo("Mirrored UV side", &sideFilter, sideFilterLabels,
+                     static_cast<int>(std::size(sideFilterLabels)))) {
+        localSideFilter_ = static_cast<LocalSideFilter>(sideFilter);
+        renderer_.SetLocalSideFilter(localSideFilter_);
+    }
+    ImGui::EndDisabled();
+    if (localSideFilter_ != LocalSideFilter::Both) {
+        ImGui::TextWrapped("The ignored side cannot overwrite this bake. Shared UV texels will still appear on both model sides.");
+    }
 
     ImGui::BeginDisabled(!captured_ || !projectionLoaded_);
     if (ImGui::Button("Bake into texture")) Bake();
@@ -572,6 +589,8 @@ bool Application::OpenObj() {
     CancelProjection();
     mesh_ = std::move(mesh);
     meshLoaded_ = true;
+    localSideFilter_ = LocalSideFilter::Both;
+    renderer_.SetLocalSideFilter(localSideFilter_);
     hiddenFaces_.assign(mesh_.TriangleCount(), 0);
     selectedFaces_.assign(mesh_.TriangleCount(), 0);
     hiddenHistory_.clear();

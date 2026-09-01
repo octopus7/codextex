@@ -24,6 +24,12 @@ struct CameraState {
     float fovDegrees{45.0f};
 };
 
+enum class LocalSideFilter : std::uint32_t {
+    Both,
+    IgnoreNegativeX,
+    IgnorePositiveX,
+};
+
 class Renderer {
 public:
     bool Initialize(HWND window, std::string& error, bool forceWarp = false);
@@ -40,6 +46,7 @@ public:
     void SetReferenceAssetsVisible(bool visible) noexcept { referenceAssetsVisible_ = visible; }
     [[nodiscard]] bool ReferenceAssetsVisible() const noexcept { return referenceAssetsVisible_; }
     void SetShadingEnabled(bool enabled) noexcept { shadingEnabled_ = enabled; }
+    void SetLocalSideFilter(LocalSideFilter filter) noexcept { localSideFilter_ = filter; }
     void SetMask(const MaskImage& mask, int featherRadius);
     void SetHiddenFaces(std::span<const std::uint8_t> hidden);
     void SetSelectedFaces(std::span<const std::uint8_t> selected);
@@ -166,6 +173,8 @@ private:
     bool projectionPreview_{};
     bool referenceAssetsVisible_{true};
     bool shadingEnabled_{};
+    LocalSideFilter localSideFilter_{LocalSideFilter::Both};
+    float localCenterX_{};
 };
 
 } // namespace codextex
