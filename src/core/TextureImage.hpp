@@ -13,6 +13,7 @@ public:
     bool LoadPng(const std::filesystem::path& path, std::string& error);
     bool SavePng(const std::filesystem::path& path, std::string& error) const;
     void Assign(std::uint32_t width, std::uint32_t height, std::span<const std::uint8_t> rgba);
+    [[nodiscard]] TextureImage CenterCroppedSquare() const;
 
     [[nodiscard]] std::uint32_t Width() const noexcept { return width_; }
     [[nodiscard]] std::uint32_t Height() const noexcept { return height_; }

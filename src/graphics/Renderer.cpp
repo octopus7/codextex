@@ -21,6 +21,7 @@ struct ShaderConstants {
     float cameraPosition[4]{};
     float parameters[4]{};
     float sideFilter[4]{};
+    float projectionRegion[4]{};
 };
 
 struct MaskConstants {
@@ -37,6 +38,7 @@ cbuffer Constants : register(b0) {
     float4 cameraPosition;
     float4 parameters;
     float4 sideFilter;
+    float4 projectionRegion;
 };
 Texture2D<float4> baseColor : register(t0);
 StructuredBuffer<uint> selectedFaces : register(t1);
@@ -85,8 +87,10 @@ PSOutput PSMain(VSOutput input) {
     }
     if (parameters.z > 0.5) {
         const float2 screenUv = input.position.xy / parameters.xy;
-        const float mask = maskPreview.SampleLevel(linearSampler, screenUv, 0);
-        const float3 projected = projectionPreview.SampleLevel(linearSampler, screenUv, 0).rgb;
+        const float2 projectionUv = (screenUv - projectionRegion.xy) / projectionRegion.zw;
+        const bool insideCrop = all(projectionUv >= 0.0) && all(projectionUv <= 1.0);
+        const float mask = insideCrop ? maskPreview.SampleLevel(linearSampler, projectionUv, 0) : 0.0;
+        const float3 projected = projectionPreview.SampleLevel(linearSampler, saturate(projectionUv), 0).rgb;
         const bool ignoreNegativeX = sideFilter.x > 0.5 && sideFilter.x < 1.5;
         const bool ignorePositiveX = sideFilter.x > 1.5;
         const bool sideAllowed = (!ignoreNegativeX || input.localPosition.x >= sideFilter.y) &&
@@ -125,6 +129,7 @@ cbuffer Constants : register(b0) {
     float4 cameraPosition;
     float4 parameters;
     float4 sideFilter;
+    float4 projectionRegion;
 };
 Texture2D<float4> projectionImage : register(t0);
 Texture2D<float> capturedDepth : register(t1);
@@ -160,13 +165,15 @@ float4 PSMain(VSOutput input) : SV_TARGET0 {
     const float3 ndc = input.captureClip.xyz / input.captureClip.w;
     const float2 screenUv = float2(ndc.x * 0.5 + 0.5, -ndc.y * 0.5 + 0.5);
     if (any(screenUv < 0.0) || any(screenUv > 1.0)) discard;
+    const float2 projectionUv = (screenUv - projectionRegion.xy) / projectionRegion.zw;
+    if (any(projectionUv < 0.0) || any(projectionUv > 1.0)) discard;
     const float sampledDepth = capturedDepth.SampleLevel(linearSampler, screenUv, 0);
     if (abs(sampledDepth - ndc.z) > parameters.w) discard;
     const float3 viewDirection = normalize(cameraPosition.xyz - input.worldPosition);
     if (dot(normalize(input.normal), viewDirection) < parameters.z) discard;
-    const float mask = projectionMask.SampleLevel(linearSampler, screenUv, 0);
+    const float mask = projectionMask.SampleLevel(linearSampler, projectionUv, 0);
     if (mask <= 0.0001) discard;
-    const float3 generated = projectionImage.SampleLevel(linearSampler, screenUv, 0).rgb;
+    const float3 generated = projectionImage.SampleLevel(linearSampler, projectionUv, 0).rgb;
     return float4(generated, mask);
 }
 )HLSL";
@@ -857,6 +864,11 @@ void Renderer::RenderViewport(const std::uint32_t width, const std::uint32_t hei
         constants.parameters[3] = shadingEnabled_ ? 1.0f : 0.0f;
         constants.sideFilter[0] = static_cast<float>(localSideFilter_);
         constants.sideFilter[1] = localCenterX_;
+        const float cropSide = static_cast<float>(std::min(width, height));
+        constants.projectionRegion[0] = (static_cast<float>(width) - cropSide) * 0.5f / width;
+        constants.projectionRegion[1] = (static_cast<float>(height) - cropSide) * 0.5f / height;
+        constants.projectionRegion[2] = cropSide / width;
+        constants.projectionRegion[3] = cropSide / height;
         std::memcpy(mapped.pData, &constants, sizeof(constants));
         context_->Unmap(constants_.Get(), 0);
     }
@@ -968,8 +980,16 @@ bool Renderer::CaptureFrame(const CameraState& camera, TextureImage& image, std:
     frozenCamera_ = camera;
     frozenWidth_ = viewportWidth_;
     frozenHeight_ = viewportHeight_;
+    frozenCropSize_ = std::min(frozenWidth_, frozenHeight_);
+    frozenCropX_ = (frozenWidth_ - frozenCropSize_) / 2;
+    frozenCropY_ = (frozenHeight_ - frozenCropSize_) / 2;
     frozenIndexCount_ = static_cast<std::uint32_t>(visibleIndices_.size());
-    return ReadTexture(frozenColor_.Get(), DXGI_FORMAT_R8G8B8A8_UNORM_SRGB, image, error);
+    TextureImage fullCapture;
+    if (!ReadTexture(frozenColor_.Get(), DXGI_FORMAT_R8G8B8A8_UNORM_SRGB, fullCapture, error)) {
+        return false;
+    }
+    image = fullCapture.CenterCroppedSquare();
+    return !image.Empty();
 }
 
 void Renderer::ClearFrozenFrame() {
@@ -978,6 +998,7 @@ void Renderer::ClearFrozenFrame() {
     frozenDepthSrv_.Reset();
     frozenIndexBuffer_.Reset();
     frozenWidth_ = frozenHeight_ = frozenIndexCount_ = 0;
+    frozenCropX_ = frozenCropY_ = frozenCropSize_ = 0;
 }
 
 bool Renderer::BakeProjection(const float maxAngleDegrees, std::string& error) {
@@ -1007,6 +1028,10 @@ bool Renderer::BakeProjection(const float maxAngleDegrees, std::string& error) {
     constants.parameters[3] = 0.003f;
     constants.sideFilter[0] = static_cast<float>(localSideFilter_);
     constants.sideFilter[1] = localCenterX_;
+    constants.projectionRegion[0] = static_cast<float>(frozenCropX_) / frozenWidth_;
+    constants.projectionRegion[1] = static_cast<float>(frozenCropY_) / frozenHeight_;
+    constants.projectionRegion[2] = static_cast<float>(frozenCropSize_) / frozenWidth_;
+    constants.projectionRegion[3] = static_cast<float>(frozenCropSize_) / frozenHeight_;
     std::memcpy(mapped.pData, &constants, sizeof(constants));
     context_->Unmap(constants_.Get(), 0);
 

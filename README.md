@@ -48,8 +48,9 @@ if it is not already present.
    their authored world coordinates and appear only as viewport/ImageGen context.
 3. Orbit to the desired view. In Face mode, click or lasso occluding triangles
    and hide them to expose recessed areas.
-4. Capture the view. Visible reference sets are included in the ImageGen image,
-   while the frozen bake depth contains only the primary OBJ.
+4. Capture the view. The cyan `ImageGen 1:1 crop` frame becomes the square image
+   sent to ImageGen. Visible reference sets inside it are included, while the
+   frozen bake depth contains only the primary OBJ.
 5. Generate a projection with Codex ImageGen or open an external PNG with the
    same aspect ratio.
 6. In Mask mode, optionally turn off `Show in viewport` for the reference sets,
@@ -61,6 +62,9 @@ The viewport starts in an unlit Base Color mode so PNG texels are displayed
 without lighting multiplication. `Neutral shading` is an optional display and
 capture aid. The first-run docking layout reserves the main central area for the
 3D viewport; `Fit primary view (F)` recenters and tightly frames the editable OBJ.
+The viewport crop frame shows the exact centered square sent to ImageGen. Generated
+images and external projection PNGs must also be square; preview, mask editing,
+and UV baking are clipped and mapped back to that frame without stretching.
 The UI loads a Windows Korean font for IME-composed Korean prompt input and keeps
 the completed text as UTF-8 when it is sent to Codex.
 CodexTex enables per-monitor DPI awareness before creating its window. UI fonts,

@@ -33,3 +33,22 @@ TEST_CASE("PNG round trip preserves RGBA pixels") {
     CHECK(loaded.Pixels() == std::vector<std::uint8_t>(pixels.begin(), pixels.end()));
     if (SUCCEEDED(comResult)) CoUninitialize();
 }
+
+TEST_CASE("Center square crop removes equal pixels from the long axis") {
+    std::vector<std::uint8_t> pixels(4 * 2 * 4, 255);
+    for (std::uint32_t y = 0; y < 2; ++y) {
+        for (std::uint32_t x = 0; x < 4; ++x) {
+            const std::size_t offset = (static_cast<std::size_t>(y) * 4 + x) * 4;
+            pixels[offset] = static_cast<std::uint8_t>(x + y * 10);
+        }
+    }
+    codextex::TextureImage source;
+    source.Assign(4, 2, pixels);
+    const codextex::TextureImage cropped = source.CenterCroppedSquare();
+    REQUIRE(cropped.Width() == 2);
+    REQUIRE(cropped.Height() == 2);
+    CHECK(cropped.Pixels()[0] == 1);
+    CHECK(cropped.Pixels()[4] == 2);
+    CHECK(cropped.Pixels()[8] == 11);
+    CHECK(cropped.Pixels()[12] == 12);
+}

@@ -159,6 +159,9 @@ private:
     CameraState frozenCamera_{};
     std::uint32_t frozenWidth_{};
     std::uint32_t frozenHeight_{};
+    std::uint32_t frozenCropX_{};
+    std::uint32_t frozenCropY_{};
+    std::uint32_t frozenCropSize_{};
     std::uint32_t frozenIndexCount_{};
 
     std::vector<Vertex> vertices_;

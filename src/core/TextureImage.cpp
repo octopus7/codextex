@@ -4,6 +4,7 @@
 #include <Windows.h>
 #include <wincodec.h>
 
+#include <algorithm>
 #include <cstring>
 #include <system_error>
 
@@ -90,6 +91,24 @@ void TextureImage::Assign(const std::uint32_t width, const std::uint32_t height,
     width_ = width;
     height_ = height;
     pixels_.assign(rgba.begin(), rgba.end());
+}
+
+TextureImage TextureImage::CenterCroppedSquare() const {
+    TextureImage cropped;
+    if (Empty() || width_ == 0 || height_ == 0) return cropped;
+    const std::uint32_t side = std::min(width_, height_);
+    const std::uint32_t offsetX = (width_ - side) / 2;
+    const std::uint32_t offsetY = (height_ - side) / 2;
+    std::vector<std::uint8_t> pixels(static_cast<std::size_t>(side) * side * 4);
+    for (std::uint32_t y = 0; y < side; ++y) {
+        const std::size_t sourceOffset =
+            (static_cast<std::size_t>(y + offsetY) * width_ + offsetX) * 4;
+        const std::size_t destinationOffset = static_cast<std::size_t>(y) * side * 4;
+        std::memcpy(pixels.data() + destinationOffset, pixels_.data() + sourceOffset,
+                    static_cast<std::size_t>(side) * 4);
+    }
+    cropped.Assign(side, side, pixels);
+    return cropped;
 }
 
 } // namespace codextex

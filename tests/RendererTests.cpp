@@ -250,21 +250,23 @@ f 5/1 6/2 7/3 8/4
     renderer.RenderViewport(256, 128, camera);
     codextex::TextureImage capture;
     REQUIRE(renderer.CaptureFrame(camera, capture, error));
+    REQUIRE(capture.Width() == 128);
+    REQUIRE(capture.Height() == 128);
 
-    std::vector<std::uint8_t> projectionPixels(256 * 128 * 4, 255);
+    std::vector<std::uint8_t> projectionPixels(128 * 128 * 4, 255);
     for (std::uint32_t y = 0; y < 128; ++y) {
-        for (std::uint32_t x = 0; x < 256; ++x) {
-            const std::size_t pixel = (static_cast<std::size_t>(y) * 256 + x) * 4;
-            projectionPixels[pixel] = x < 128 ? 235 : 15;
+        for (std::uint32_t x = 0; x < 128; ++x) {
+            const std::size_t pixel = (static_cast<std::size_t>(y) * 128 + x) * 4;
+            projectionPixels[pixel] = x < 64 ? 235 : 15;
             projectionPixels[pixel + 1] = 20;
-            projectionPixels[pixel + 2] = x < 128 ? 15 : 235;
+            projectionPixels[pixel + 2] = x < 64 ? 15 : 235;
         }
     }
     codextex::TextureImage projection;
-    projection.Assign(256, 128, projectionPixels);
+    projection.Assign(128, 128, projectionPixels);
     REQUIRE(renderer.SetProjectionImage(projection, error));
     codextex::MaskImage mask;
-    mask.Resize(256, 128, true);
+    mask.Resize(128, 128, true);
     renderer.SetMask(mask, 0);
 
     renderer.SetLocalSideFilter(codextex::LocalSideFilter::IgnorePositiveX);
@@ -285,5 +287,72 @@ f 5/1 6/2 7/3 8/4
     CHECK(positiveSideBake.Pixels()[center] > 180);
     CHECK(positiveSideBake.Pixels()[center + 2] < 60);
     CHECK(positiveSideBake.Pixels()[center + 3] == 91);
+    renderer.Shutdown();
+}
+
+TEST_CASE("WARP square crop prevents baking viewport content outside the frame") {
+    HiddenWindow window;
+    REQUIRE(window.Get() != nullptr);
+
+    codextex::Renderer renderer;
+    std::string error;
+    REQUIRE(renderer.Initialize(window.Get(), error, true));
+    const auto directory = std::filesystem::temp_directory_path() / "codextex-tests";
+    std::filesystem::create_directories(directory);
+    const auto objPath = directory / "outside-square-crop.obj";
+    std::ofstream obj(objPath, std::ios::binary | std::ios::trunc);
+    obj << R"OBJ(
+v 2.6 -0.5 0
+v 3.4 -0.5 0
+v 3.4  0.5 0
+v 2.6  0.5 0
+vt 0 0
+vt 1 0
+vt 1 1
+vt 0 1
+f 1/1 2/2 3/3 4/4
+)OBJ";
+    obj.close();
+    codextex::Mesh mesh;
+    REQUIRE(mesh.LoadObj(objPath, error));
+    REQUIRE(renderer.SetMesh(mesh, error));
+
+    std::vector<std::uint8_t> basePixels(8 * 8 * 4, 255);
+    for (std::size_t i = 0; i < basePixels.size(); i += 4) {
+        basePixels[i] = 14;
+        basePixels[i + 1] = 28;
+        basePixels[i + 2] = 42;
+        basePixels[i + 3] = 73;
+    }
+    codextex::TextureImage base;
+    base.Assign(8, 8, basePixels);
+    REQUIRE(renderer.SetWorkingTexture(base, error));
+
+    codextex::CameraState camera;
+    camera.pitch = 0;
+    camera.distance = 5;
+    renderer.RenderViewport(256, 128, camera);
+    codextex::TextureImage capture;
+    REQUIRE(renderer.CaptureFrame(camera, capture, error));
+    REQUIRE(capture.Width() == 128);
+    REQUIRE(capture.Height() == 128);
+
+    std::vector<std::uint8_t> redPixels(128 * 128 * 4, 255);
+    for (std::size_t i = 0; i < redPixels.size(); i += 4) {
+        redPixels[i] = 240;
+        redPixels[i + 1] = 10;
+        redPixels[i + 2] = 10;
+    }
+    codextex::TextureImage projection;
+    projection.Assign(128, 128, redPixels);
+    REQUIRE(renderer.SetProjectionImage(projection, error));
+    codextex::MaskImage mask;
+    mask.Resize(128, 128, true);
+    renderer.SetMask(mask, 0);
+    REQUIRE(renderer.BakeProjection(75, error));
+
+    codextex::TextureImage baked;
+    REQUIRE(renderer.ReadWorkingTexture(baked, error));
+    CHECK(baked.Pixels() == basePixels);
     renderer.Shutdown();
 }

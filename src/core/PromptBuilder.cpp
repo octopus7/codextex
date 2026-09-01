@@ -16,6 +16,7 @@ std::string PromptBuilder::GenerationPrompt(const std::string& userRequest) {
               "primary target mesh.\n"
            << "Primary request: " << userRequest << "\n"
            << "Style/medium: production game-asset Base Color texture appearance\n"
+           << "Output format: square 1:1 image matching Image 1 dimensions exactly\n"
            << "Composition/framing: preserve Image 1 exactly\n"
            << "Lighting/mood: neutral material reference; avoid baked highlights and cast shadows\n"
            << "Constraints: change only the surface appearance; preserve camera, silhouette, geometry, "

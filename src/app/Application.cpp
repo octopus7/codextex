@@ -46,6 +46,21 @@ bool SameAspect(const TextureImage& lhs, const TextureImage& rhs) {
     return std::abs(left - right) < 0.005;
 }
 
+struct SquareCropFrame {
+    Vec2 origin;
+    float side{};
+
+    [[nodiscard]] bool Contains(const Vec2& point) const noexcept {
+        return point.x >= origin.x && point.y >= origin.y &&
+               point.x <= origin.x + side && point.y <= origin.y + side;
+    }
+};
+
+SquareCropFrame CenteredSquare(const Vec2& size) {
+    const float side = std::max(std::min(size.x, size.y), 1.0f);
+    return {{(size.x - side) * 0.5f, (size.y - side) * 0.5f}, side};
+}
+
 float Dot(const Vec3& a, const Vec3& b) {
     return a.x * b.x + a.y * b.y + a.z * b.z;
 }
@@ -315,6 +330,17 @@ void Application::DrawViewport() {
                  ImVec2(available.x, available.y));
     HandleViewportInput({topLeft.x, topLeft.y}, available);
 
+    if (meshLoaded_) {
+        const SquareCropFrame crop = CenteredSquare(available);
+        ImDrawList* draw = ImGui::GetWindowDrawList();
+        const ImU32 color = captured_ ? IM_COL32(255, 196, 48, 255) : IM_COL32(70, 210, 255, 255);
+        const ImVec2 minimum{topLeft.x + crop.origin.x, topLeft.y + crop.origin.y};
+        const ImVec2 maximum{minimum.x + crop.side, minimum.y + crop.side};
+        draw->AddRect(minimum, maximum, color, 0.0f, 0, 2.0f * dpiScale_);
+        draw->AddText(ImVec2(minimum.x + 6.0f * dpiScale_, minimum.y + 5.0f * dpiScale_),
+                      color, "ImageGen 1:1 crop");
+    }
+
     if (lassoActive_ && lassoPoints_.size() > 1) {
         ImDrawList* draw = ImGui::GetWindowDrawList();
         for (std::size_t i = 1; i < lassoPoints_.size(); ++i) {
@@ -374,19 +400,21 @@ void Application::HandleViewportInput(const Vec2& topLeft, const Vec2& size) {
             }
         }
     } else if (editMode_ == EditMode::Mask && captured_) {
-        const float scaleX = static_cast<float>(mask_.Width()) / std::max(size.x, 1.0f);
-        const float scaleY = static_cast<float>(mask_.Height()) / std::max(size.y, 1.0f);
+        const SquareCropFrame crop = CenteredSquare(size);
+        const Vec2 cropLocal{local.x - crop.origin.x, local.y - crop.origin.y};
+        const bool insideCrop = crop.Contains(local);
+        const float maskScale = static_cast<float>(mask_.Width()) / crop.side;
         if (!useLasso_) {
             const bool painting = ImGui::IsMouseDown(ImGuiMouseButton_Left) ||
                                   ImGui::IsMouseDown(ImGuiMouseButton_Right);
-            if (painting) {
+            if (painting && insideCrop) {
                 const bool include = ImGui::IsMouseDown(ImGuiMouseButton_Left);
-                mask_.PaintCircle(local.x * scaleX, local.y * scaleY,
-                                  brushRadius_ * std::max(scaleX, scaleY), include);
+                mask_.PaintCircle(cropLocal.x * maskScale, cropLocal.y * maskScale,
+                                  brushRadius_ * maskScale, include);
                 ApplyMaskChange();
             }
         } else {
-            if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+            if (ImGui::IsMouseClicked(ImGuiMouseButton_Left) && insideCrop) {
                 lassoActive_ = true;
                 lassoPoints_.clear();
             }
@@ -394,7 +422,10 @@ void Application::HandleViewportInput(const Vec2& topLeft, const Vec2& size) {
             if (lassoActive_ && ImGui::IsMouseReleased(ImGuiMouseButton_Left)) {
                 std::vector<Vec2> maskPoints;
                 maskPoints.reserve(lassoPoints_.size());
-                for (const Vec2 point : lassoPoints_) maskPoints.push_back({point.x * scaleX, point.y * scaleY});
+                for (const Vec2 point : lassoPoints_) {
+                    maskPoints.push_back({(point.x - crop.origin.x) * maskScale,
+                                          (point.y - crop.origin.y) * maskScale});
+                }
                 mask_.ApplyLasso(maskPoints, maskInclude_);
                 ApplyMaskChange();
                 lassoActive_ = false;
@@ -644,8 +675,9 @@ bool Application::OpenProjection() {
         return false;
     }
     TextureImage capture;
-    if (!capture.LoadPng(capturePath_, error) || !SameAspect(capture, image)) {
-        SetStatus("Projection PNG must have the same aspect ratio as the captured viewport.", true);
+    if (!capture.LoadPng(capturePath_, error) || !SameAspect(capture, image) ||
+        image.Width() != image.Height()) {
+        SetStatus("Projection PNG must be square to match the ImageGen crop.", true);
         return false;
     }
     if (!renderer_.SetProjectionImage(image, error)) {
@@ -745,7 +777,7 @@ bool Application::CaptureView() {
     projectionPath_.clear();
     renderer_.SetProjectionPreview(false);
     editMode_ = EditMode::Mask;
-    SetStatus("View captured and camera locked.");
+    SetStatus("Square ImageGen crop captured and camera locked.");
     return true;
 }
 
@@ -884,8 +916,8 @@ void Application::HandleCodexEvents() {
             TextureImage capture;
             std::string error;
             if (!image.LoadPng(event.imagePath, error) || !capture.LoadPng(capturePath_, error) ||
-                !SameAspect(capture, image)) {
-                SetStatus(error.empty() ? "Generated image aspect ratio does not match the captured view." : error, true);
+                !SameAspect(capture, image) || image.Width() != image.Height()) {
+                SetStatus(error.empty() ? "ImageGen result must be square to match the captured crop." : error, true);
                 continue;
             }
             if (!renderer_.SetProjectionImage(image, error)) {
