@@ -1,0 +1,9 @@
+/build/
+/build-*/
+/out/
+/.vs/
+/vcpkg_installed/
+*.user
+*.suo
+*.VC.db
+*.VC.VC.opendb
