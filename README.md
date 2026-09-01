@@ -79,6 +79,11 @@ Codex-managed location. CodexTex consumes `imageGeneration.savedPath` and
 copies the selected image into its per-process session directory. That session
 directory is removed on clean shutdown.
 
+CodexTex launches the first Codex App Server it can resolve from a native
+`codex.exe`, an npm `codex.cmd` shim, or the versioned Codex desktop installation
+under `%LOCALAPPDATA%`. `Retry Codex detection` reruns the executable and protocol
+checks after the CLI, PATH, login, or skill availability changes.
+
 Mask feathering runs as a Direct3D 11 jump-flood compute pass. The binary lasso
 or brush mask remains authoritative, so feathering only reduces alpha inward;
 the frozen depth, visible-face set, and front-facing angle test are applied

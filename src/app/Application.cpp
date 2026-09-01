@@ -507,6 +507,12 @@ void Application::DrawTools() {
         if (ImGui::Button("Cancel AI")) codex_.Cancel();
     }
     ImGui::TextWrapped("%s", codex_.AvailabilityMessage().c_str());
+    if (!codex_.IsAvailable() && !codex_.IsBusy()) {
+        if (ImGui::Button("Retry Codex detection")) {
+            const bool started = codex_.Start(sessionDirectory_);
+            SetStatus(codex_.AvailabilityMessage(), !started || !codex_.IsAvailable());
+        }
+    }
 
     if (projectionLoaded_) {
         ImGui::Text("Projection: %s", Narrow(projectionPath_.filename()).c_str());

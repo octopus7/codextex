@@ -6,7 +6,9 @@
 #include <array>
 #include <chrono>
 #include <cstring>
+#include <cwctype>
 #include <system_error>
+#include <vector>
 
 namespace codextex {
 namespace {
@@ -25,14 +27,100 @@ std::wstring Quote(const std::wstring& value) {
     return L"\"" + value + L"\"";
 }
 
-std::optional<std::filesystem::path> FindCodexExecutable() {
+struct LaunchCandidate {
+    std::filesystem::path command;
+    std::filesystem::path application;
+    std::wstring commandLine;
+};
+
+std::optional<std::filesystem::path> SearchCommand(const wchar_t* extension) {
     std::array<wchar_t, 32768> buffer{};
-    const DWORD size = SearchPathW(nullptr, L"codex.exe", nullptr,
+    const DWORD size = SearchPathW(nullptr, L"codex", extension,
                                    static_cast<DWORD>(buffer.size()), buffer.data(), nullptr);
     if (size > 0 && size < buffer.size()) {
         return std::filesystem::path(buffer.data());
     }
     return std::nullopt;
+}
+
+std::optional<std::filesystem::path> EnvironmentPath(const wchar_t* name) {
+    const DWORD size = GetEnvironmentVariableW(name, nullptr, 0);
+    if (size == 0) return std::nullopt;
+    std::wstring value(size, L'\0');
+    if (GetEnvironmentVariableW(name, value.data(), size) == 0) return std::nullopt;
+    value.resize(size - 1);
+    return std::filesystem::path(value);
+}
+
+std::filesystem::path SystemCommandInterpreter() {
+    std::array<wchar_t, MAX_PATH> directory{};
+    const UINT size = GetSystemDirectoryW(directory.data(), static_cast<UINT>(directory.size()));
+    if (size == 0 || size >= directory.size()) return L"cmd.exe";
+    return std::filesystem::path(directory.data()) / L"cmd.exe";
+}
+
+void AddLaunchCandidate(std::vector<LaunchCandidate>& candidates,
+                        const std::filesystem::path& command) {
+    std::error_code error;
+    if (command.empty() || !std::filesystem::is_regular_file(command, error)) return;
+    for (const auto& candidate : candidates) {
+        if (std::filesystem::equivalent(candidate.command, command, error) && !error) return;
+        error.clear();
+    }
+
+    std::wstring extension = command.extension().wstring();
+    std::transform(extension.begin(), extension.end(), extension.begin(),
+                   [](const wchar_t value) { return static_cast<wchar_t>(std::towlower(value)); });
+    LaunchCandidate candidate;
+    candidate.command = command;
+    if (extension == L".cmd" || extension == L".bat") {
+        candidate.application = SystemCommandInterpreter();
+        candidate.commandLine = Quote(candidate.application.wstring()) + L" /d /s /c \"\"" +
+            command.wstring() + L"\" app-server --stdio\"";
+    } else {
+        candidate.application = command;
+        candidate.commandLine = Quote(command.wstring()) + L" app-server --stdio";
+    }
+    candidates.push_back(std::move(candidate));
+}
+
+std::vector<LaunchCandidate> FindCodexCommands(
+    const std::filesystem::path& executableOverride) {
+    std::vector<LaunchCandidate> candidates;
+    if (!executableOverride.empty()) {
+        AddLaunchCandidate(candidates, executableOverride);
+        return candidates;
+    }
+
+    if (const auto executable = SearchCommand(L".exe")) AddLaunchCandidate(candidates, *executable);
+    if (const auto script = SearchCommand(L".cmd")) AddLaunchCandidate(candidates, *script);
+    if (const auto script = SearchCommand(L".bat")) AddLaunchCandidate(candidates, *script);
+
+    if (const auto localAppData = EnvironmentPath(L"LOCALAPPDATA")) {
+        const auto binDirectory = *localAppData / L"OpenAI" / L"Codex" / L"bin";
+        AddLaunchCandidate(candidates, binDirectory / L"codex.exe");
+        std::error_code error;
+        std::vector<std::filesystem::path> desktopExecutables;
+        for (std::filesystem::directory_iterator iterator(
+                 binDirectory, std::filesystem::directory_options::skip_permission_denied, error), end;
+             !error && iterator != end; iterator.increment(error)) {
+            if (!iterator->is_directory(error)) continue;
+            const auto executable = iterator->path() / L"codex.exe";
+            if (std::filesystem::is_regular_file(executable, error)) {
+                desktopExecutables.push_back(executable);
+            }
+            error.clear();
+        }
+        std::ranges::sort(desktopExecutables, std::greater{}, [](const auto& path) {
+            std::error_code timeError;
+            return std::filesystem::last_write_time(path, timeError);
+        });
+        for (const auto& executable : desktopExecutables) AddLaunchCandidate(candidates, executable);
+    }
+    if (const auto appData = EnvironmentPath(L"APPDATA")) {
+        AddLaunchCandidate(candidates, *appData / L"npm" / L"codex.cmd");
+    }
+    return candidates;
 }
 
 std::string StripCodeFence(std::string text) {
@@ -127,11 +215,9 @@ void CodexBridge::Stop() {
 }
 
 bool CodexBridge::LaunchProcess() {
-    const auto executable = executableOverride_.empty()
-        ? FindCodexExecutable()
-        : std::optional<std::filesystem::path>(executableOverride_);
-    if (!executable) {
-        availabilityMessage_ = "codex.exe was not found on PATH. AI features are disabled.";
+    const auto candidates = FindCodexCommands(executableOverride_);
+    if (candidates.empty()) {
+        availabilityMessage_ = "No runnable Codex CLI was found on PATH, in the Codex desktop install, or in the npm user bin. AI features are disabled.";
         return false;
     }
 
@@ -161,20 +247,30 @@ bool CodexBridge::LaunchProcess() {
     startup.hStdOutput = stdoutWrite;
     startup.hStdError = nullHandle;
     PROCESS_INFORMATION processInfo{};
-    std::wstring commandLine = Quote(executable->wstring()) + L" app-server --stdio";
-    const BOOL created = CreateProcessW(executable->c_str(), commandLine.data(), nullptr, nullptr, TRUE,
-                                        CREATE_NO_WINDOW, nullptr, sessionDirectory_.c_str(), &startup,
-                                        &processInfo);
+    DWORD launchError = ERROR_FILE_NOT_FOUND;
+    const LaunchCandidate* launched = nullptr;
+    for (const auto& candidate : candidates) {
+        std::wstring commandLine = candidate.commandLine;
+        if (CreateProcessW(candidate.application.c_str(), commandLine.data(), nullptr, nullptr, TRUE,
+                           CREATE_NO_WINDOW, nullptr, sessionDirectory_.c_str(), &startup,
+                           &processInfo)) {
+            launched = &candidate;
+            break;
+        }
+        launchError = GetLastError();
+    }
     CloseHandle(stdinRead);
     CloseHandle(stdoutWrite);
     if (nullHandle != INVALID_HANDLE_VALUE) CloseHandle(nullHandle);
-    if (!created) {
+    if (!launched) {
         CloseHandle(stdoutRead);
         CloseHandle(stdinWrite);
-        availabilityMessage_ = "Could not start Codex App Server (Win32 error " +
-            std::to_string(GetLastError()) + ").";
+        availabilityMessage_ = "Codex CLI candidates were found, but none could start App Server (Win32 error " +
+            std::to_string(launchError) + ").";
         return false;
     }
+
+    launchedCommand_ = launched->command;
 
     process_ = processInfo.hProcess;
     processThread_ = processInfo.hThread;
@@ -227,7 +323,8 @@ bool CodexBridge::InitializeProtocol() {
             return true;
         }
         available_ = true;
-        availabilityMessage_ = "Codex ImageGen is ready.";
+        availabilityMessage_ = "Codex ImageGen is ready via " +
+            PathUtf8(launchedCommand_.filename()) + ".";
         PushEvent({CodexEventType::Status, availabilityMessage_});
         return true;
     } catch (const std::exception& exception) {

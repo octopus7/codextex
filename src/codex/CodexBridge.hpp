@@ -85,6 +85,7 @@ private:
 
     std::filesystem::path sessionDirectory_;
     std::filesystem::path executableOverride_;
+    std::filesystem::path launchedCommand_;
     std::filesystem::path imagegenSkillPath_;
     std::string availabilityMessage_ = "Codex has not been checked.";
     std::string threadId_;

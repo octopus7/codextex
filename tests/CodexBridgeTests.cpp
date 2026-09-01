@@ -83,6 +83,21 @@ TEST_CASE("App Server mock disables AI when signed out or imagegen is missing") 
     }
 }
 
+TEST_CASE("App Server can launch through a codex.cmd command shim") {
+    ScopedEnvironment mode(L"CODEXTEX_MOCK_MODE", L"success");
+    const auto session = Session(L"mock-command-shim");
+    const auto shim = session / L"codex.cmd";
+    std::ofstream command(shim, std::ios::binary | std::ios::trunc);
+    command << "@echo off\r\n\"" << std::filesystem::path(CODEXTEX_MOCK_CODEX_PATH).string()
+            << "\" %*\r\n";
+    command.close();
+
+    codextex::CodexBridge bridge;
+    REQUIRE(bridge.Start(session, shim));
+    CHECK(bridge.IsAvailable());
+    CHECK(bridge.AvailabilityMessage().find("codex.cmd") != std::string::npos);
+}
+
 TEST_CASE("App Server mock delivers generated images and structured mask proposals") {
     ScopedEnvironment mode(L"CODEXTEX_MOCK_MODE", L"success");
     const auto session = Session(L"mock-success");
