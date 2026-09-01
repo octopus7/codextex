@@ -63,6 +63,10 @@ capture aid. The first-run docking layout reserves the main central area for the
 3D viewport; `Fit primary view (F)` recenters and tightly frames the editable OBJ.
 The UI loads a Windows Korean font for IME-composed Korean prompt input and keeps
 the completed text as UTF-8 when it is sent to Codex.
+CodexTex enables per-monitor DPI awareness before creating its window. UI fonts,
+spacing, and the initial window size are rasterized at the monitor's native DPI,
+and are rebuilt after a `WM_DPICHANGED` monitor transition instead of relying on
+Windows bitmap scaling.
 
 Generated images are first produced by Codex's built-in ImageGen at its normal
 Codex-managed location. CodexTex consumes `imageGeneration.savedPath` and

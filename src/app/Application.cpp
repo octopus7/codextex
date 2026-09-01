@@ -62,7 +62,7 @@ Vec3 Normalize(const Vec3& value) {
     return {value.x / length, value.y / length, value.z / length};
 }
 
-bool LoadKoreanUiFont(ImGuiIO& io) {
+bool LoadUiFont(ImGuiIO& io, const float dpiScale) {
     std::array<wchar_t, MAX_PATH> windowsDirectory{};
     const UINT length = GetWindowsDirectoryW(windowsDirectory.data(),
                                              static_cast<UINT>(windowsDirectory.size()));
@@ -78,11 +78,14 @@ bool LoadKoreanUiFont(ImGuiIO& io) {
         if (!std::filesystem::is_regular_file(fontPath, fileError)) continue;
         const std::string utf8Path = Narrow(fontPath);
         if (ImFont* font = io.Fonts->AddFontFromFileTTF(
-                utf8Path.c_str(), 17.0f, nullptr, kKoreanGlyphRanges)) {
+                utf8Path.c_str(), 17.0f * dpiScale, nullptr, kKoreanGlyphRanges)) {
             io.FontDefault = font;
             return true;
         }
     }
+    ImFontConfig fallbackConfig{};
+    fallbackConfig.SizePixels = 13.0f * dpiScale;
+    io.FontDefault = io.Fonts->AddFontDefault(&fallbackConfig);
     return false;
 }
 
@@ -90,6 +93,10 @@ bool LoadKoreanUiFont(ImGuiIO& io) {
 
 bool Application::Initialize(HINSTANCE instance, const int showCommand, std::string& error) {
     instance_ = instance;
+    const POINT primaryPoint{};
+    dpiScale_ = std::clamp(ImGui_ImplWin32_GetDpiScaleForMonitor(
+                               MonitorFromPoint(primaryPoint, MONITOR_DEFAULTTOPRIMARY)),
+                           1.0f, 4.0f);
     WNDCLASSEXW windowClass{sizeof(WNDCLASSEXW)};
     windowClass.style = CS_CLASSDC;
     windowClass.lpfnWndProc = WindowProcedure;
@@ -100,8 +107,11 @@ bool Application::Initialize(HINSTANCE instance, const int showCommand, std::str
         error = "Could not register the CodexTex window class.";
         return false;
     }
+    const int initialWidth = static_cast<int>(std::lround(1500.0f * dpiScale_));
+    const int initialHeight = static_cast<int>(std::lround(900.0f * dpiScale_));
     window_ = CreateWindowExW(0, kWindowClass, L"CodexTex", WS_OVERLAPPEDWINDOW,
-                              CW_USEDEFAULT, CW_USEDEFAULT, 1500, 900, nullptr, nullptr, instance, this);
+                              CW_USEDEFAULT, CW_USEDEFAULT, initialWidth, initialHeight,
+                              nullptr, nullptr, instance, this);
     if (!window_) {
         error = "Could not create the CodexTex window.";
         return false;
@@ -114,11 +124,14 @@ bool Application::Initialize(HINSTANCE instance, const int showCommand, std::str
     ImGui::CreateContext();
     ImGuiIO& io = ImGui::GetIO();
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard | ImGuiConfigFlags_DockingEnable;
-    const bool koreanFontLoaded = LoadKoreanUiFont(io);
+    dpiScale_ = std::clamp(ImGui_ImplWin32_GetDpiScaleForHwnd(window_), 1.0f, 4.0f);
+    const bool koreanFontLoaded = LoadUiFont(io, dpiScale_);
     ImGui::StyleColorsDark();
     ImGui::GetStyle().WindowRounding = 4.0f;
+    ImGui::GetStyle().ScaleAllSizes(dpiScale_);
     ImGui_ImplWin32_Init(window_);
     ImGui_ImplDX11_Init(renderer_.Device(), renderer_.Context());
+    imguiBackendsInitialized_ = true;
 
     sessionDirectory_ = CreateSessionDirectory();
     std::error_code directoryError;
@@ -160,6 +173,7 @@ int Application::Run() {
 void Application::Shutdown() {
     codex_.Stop();
     if (ImGui::GetCurrentContext()) {
+        imguiBackendsInitialized_ = false;
         ImGui_ImplDX11_Shutdown();
         ImGui_ImplWin32_Shutdown();
         ImGui::DestroyContext();
@@ -190,14 +204,25 @@ bool Application::CanClose() {
 
 LRESULT CALLBACK Application::WindowProcedure(HWND window, const UINT message, const WPARAM wParam,
                                                const LPARAM lParam) {
-    if (ImGui::GetCurrentContext() && ImGui_ImplWin32_WndProcHandler(window, message, wParam, lParam)) {
-        return TRUE;
-    }
     Application* app = reinterpret_cast<Application*>(GetWindowLongPtrW(window, GWLP_USERDATA));
     if (message == WM_NCCREATE) {
         const auto* create = reinterpret_cast<CREATESTRUCTW*>(lParam);
         app = static_cast<Application*>(create->lpCreateParams);
         SetWindowLongPtrW(window, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(app));
+    }
+    if (message == WM_DPICHANGED && app) {
+        if (ImGui::GetCurrentContext()) {
+            ImGui_ImplWin32_WndProcHandler(window, message, wParam, lParam);
+        }
+        const auto* suggested = reinterpret_cast<const RECT*>(lParam);
+        SetWindowPos(window, nullptr, suggested->left, suggested->top,
+                     suggested->right - suggested->left, suggested->bottom - suggested->top,
+                     SWP_NOACTIVATE | SWP_NOZORDER);
+        app->ApplyDpiScale(static_cast<float>(HIWORD(wParam)) / 96.0f);
+        return 0;
+    }
+    if (ImGui::GetCurrentContext() && ImGui_ImplWin32_WndProcHandler(window, message, wParam, lParam)) {
+        return TRUE;
     }
     switch (message) {
     case WM_SIZE:
@@ -214,6 +239,24 @@ LRESULT CALLBACK Application::WindowProcedure(HWND window, const UINT message, c
     default:
         return DefWindowProcW(window, message, wParam, lParam);
     }
+}
+
+void Application::ApplyDpiScale(const float scale) {
+    const float nextScale = std::clamp(scale, 1.0f, 4.0f);
+    if (std::abs(nextScale - dpiScale_) < 0.01f) return;
+    dpiScale_ = nextScale;
+    if (!imguiBackendsInitialized_ || !ImGui::GetCurrentContext()) return;
+
+    ImGui_ImplDX11_InvalidateDeviceObjects();
+    ImGuiIO& io = ImGui::GetIO();
+    io.Fonts->Clear();
+    if (!LoadUiFont(io, dpiScale_)) {
+        SetStatus("A Windows Korean font could not be loaded; Korean text may not render.", true);
+    }
+    ImGui::StyleColorsDark();
+    ImGui::GetStyle().WindowRounding = 4.0f;
+    ImGui::GetStyle().ScaleAllSizes(dpiScale_);
+    ImGui_ImplDX11_CreateDeviceObjects();
 }
 
 void Application::DrawUi() {
@@ -450,7 +493,7 @@ void Application::DrawTools() {
     if (ImGui::Button("Open external PNG")) OpenProjection();
     ImGui::EndDisabled();
     ImGui::InputTextMultiline("ImageGen prompt", generationPrompt_.data(), generationPrompt_.size(),
-                              ImVec2(-1, 90));
+                              ImVec2(-1, 90.0f * dpiScale_));
     const bool canGenerate = captured_ && codex_.IsAvailable() && !codex_.IsBusy() &&
                              generationPrompt_[0] != '\0';
     ImGui::BeginDisabled(!canGenerate);

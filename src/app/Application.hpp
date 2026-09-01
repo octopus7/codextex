@@ -36,6 +36,7 @@ private:
     void DrawTexturePreview();
     void HandleCodexEvents();
     void HandleViewportInput(const Vec2& topLeft, const Vec2& size);
+    void ApplyDpiScale(float scale);
 
     bool OpenObj();
     bool OpenTexture();
@@ -91,6 +92,8 @@ private:
     bool referenceAssetsVisible_{true};
     bool shadingEnabled_{};
     bool dockLayoutInitialized_{};
+    bool imguiBackendsInitialized_{};
+    float dpiScale_{1.0f};
 
     std::vector<std::uint8_t> hiddenFaces_;
     std::vector<std::uint8_t> selectedFaces_;
