@@ -1,6 +1,7 @@
 #include "app/Application.hpp"
 
 #include <imgui.h>
+#include <imgui_internal.h>
 #include <imgui_impl_dx11.h>
 #include <imgui_impl_win32.h>
 #include <commdlg.h>
@@ -9,6 +10,8 @@
 #include <chrono>
 #include <cmath>
 #include <cstring>
+#include <numbers>
+#include <optional>
 #include <system_error>
 
 extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(
@@ -19,6 +22,17 @@ namespace {
 
 constexpr wchar_t kWindowClass[] = L"CodexTexWindow";
 constexpr std::size_t kUndoLimit = 8;
+constexpr ImWchar kKoreanGlyphRanges[] = {
+    0x0020, 0x00ff, // Basic Latin and Latin-1
+    0x1100, 0x11ff, // Hangul Jamo
+    0x2000, 0x206f, // General punctuation
+    0x3000, 0x30ff, // CJK punctuation and symbols
+    0x3130, 0x318f, // Hangul Compatibility Jamo
+    0xa960, 0xa97f, // Hangul Jamo Extended-A
+    0xac00, 0xd7a3, // All modern precomposed Hangul syllables
+    0xd7b0, 0xd7ff, // Hangul Jamo Extended-B
+    0,
+};
 
 std::string Narrow(const std::filesystem::path& path) {
     const auto value = path.u8string();
@@ -30,6 +44,46 @@ bool SameAspect(const TextureImage& lhs, const TextureImage& rhs) {
     const double left = static_cast<double>(lhs.Width()) / lhs.Height();
     const double right = static_cast<double>(rhs.Width()) / rhs.Height();
     return std::abs(left - right) < 0.005;
+}
+
+float Dot(const Vec3& a, const Vec3& b) {
+    return a.x * b.x + a.y * b.y + a.z * b.z;
+}
+
+Vec3 Cross(const Vec3& a, const Vec3& b) {
+    return {a.y * b.z - a.z * b.y,
+            a.z * b.x - a.x * b.z,
+            a.x * b.y - a.y * b.x};
+}
+
+Vec3 Normalize(const Vec3& value) {
+    const float length = std::sqrt(Dot(value, value));
+    if (length < 1.0e-6f) return {1, 0, 0};
+    return {value.x / length, value.y / length, value.z / length};
+}
+
+bool LoadKoreanUiFont(ImGuiIO& io) {
+    std::array<wchar_t, MAX_PATH> windowsDirectory{};
+    const UINT length = GetWindowsDirectoryW(windowsDirectory.data(),
+                                             static_cast<UINT>(windowsDirectory.size()));
+    if (length == 0 || length >= windowsDirectory.size()) return false;
+
+    const std::filesystem::path fontsDirectory =
+        std::filesystem::path(windowsDirectory.data()) / L"Fonts";
+    constexpr std::array<const wchar_t*, 3> candidates{
+        L"malgun.ttf", L"malgunsl.ttf", L"gulim.ttc"};
+    for (const wchar_t* filename : candidates) {
+        const std::filesystem::path fontPath = fontsDirectory / filename;
+        std::error_code fileError;
+        if (!std::filesystem::is_regular_file(fontPath, fileError)) continue;
+        const std::string utf8Path = Narrow(fontPath);
+        if (ImFont* font = io.Fonts->AddFontFromFileTTF(
+                utf8Path.c_str(), 17.0f, nullptr, kKoreanGlyphRanges)) {
+            io.FontDefault = font;
+            return true;
+        }
+    }
+    return false;
 }
 
 } // namespace
@@ -60,6 +114,7 @@ bool Application::Initialize(HINSTANCE instance, const int showCommand, std::str
     ImGui::CreateContext();
     ImGuiIO& io = ImGui::GetIO();
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard | ImGuiConfigFlags_DockingEnable;
+    const bool koreanFontLoaded = LoadKoreanUiFont(io);
     ImGui::StyleColorsDark();
     ImGui::GetStyle().WindowRounding = 4.0f;
     ImGui_ImplWin32_Init(window_);
@@ -70,6 +125,9 @@ bool Application::Initialize(HINSTANCE instance, const int showCommand, std::str
     std::filesystem::create_directories(sessionDirectory_, directoryError);
     capturePath_ = sessionDirectory_ / L"capture.png";
     codex_.Start(sessionDirectory_);
+    if (!koreanFontLoaded) {
+        SetStatus("A Windows Korean font could not be loaded; Korean text may not render.", true);
+    }
 
     ShowWindow(window_, showCommand);
     UpdateWindow(window_);
@@ -159,8 +217,24 @@ LRESULT CALLBACK Application::WindowProcedure(HWND window, const UINT message, c
 }
 
 void Application::DrawUi() {
-    ImGui::DockSpaceOverViewport(0, ImGui::GetMainViewport());
     DrawMenuBar();
+    const ImGuiViewport* mainViewport = ImGui::GetMainViewport();
+    const ImGuiID dockspace = ImGui::DockSpaceOverViewport(0, mainViewport);
+    if (!dockLayoutInitialized_) {
+        dockLayoutInitialized_ = true;
+        ImGui::DockBuilderRemoveNode(dockspace);
+        ImGui::DockBuilderAddNode(dockspace, ImGuiDockNodeFlags_DockSpace);
+        ImGui::DockBuilderSetNodeSize(dockspace, mainViewport->WorkSize);
+        ImGuiID right = 0;
+        ImGuiID center = dockspace;
+        ImGui::DockBuilderSplitNode(center, ImGuiDir_Right, 0.28f, &right, &center);
+        ImGuiID bottom = 0;
+        ImGui::DockBuilderSplitNode(center, ImGuiDir_Down, 0.30f, &bottom, &center);
+        ImGui::DockBuilderDockWindow("3D Viewport", center);
+        ImGui::DockBuilderDockWindow("Projection Tools", right);
+        ImGui::DockBuilderDockWindow("Texture Preview", bottom);
+        ImGui::DockBuilderFinish(dockspace);
+    }
     DrawViewport();
     DrawTools();
     DrawTexturePreview();
@@ -171,6 +245,7 @@ void Application::DrawMenuBar() {
     if (ImGui::BeginMenu("File")) {
         if (ImGui::MenuItem("Open OBJ...", "Ctrl+O")) OpenObj();
         if (ImGui::MenuItem("Open Texture PNG...", "Ctrl+T")) OpenTexture();
+        if (ImGui::MenuItem("Add Reference OBJ + PNG...")) AddReferenceAsset();
         ImGui::Separator();
         if (ImGui::MenuItem("Save Texture", "Ctrl+S", false, textureLoaded_)) SaveTexture(false);
         if (ImGui::MenuItem("Save Texture As...", nullptr, false, textureLoaded_)) SaveTexture(true);
@@ -228,6 +303,7 @@ void Application::HandleViewportInput(const Vec2& topLeft, const Vec2& size) {
     }
 
     if (!hovered || !meshLoaded_) return;
+    if (!captured_ && ImGui::IsKeyPressed(ImGuiKey_F)) FitCamera();
     if (editMode_ == EditMode::Face && !captured_) {
         if (!useLasso_ && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
             const auto triangle = renderer_.PickTriangle(
@@ -301,6 +377,43 @@ void Application::DrawTools() {
         ImGui::Text("Texture: %s (%ux%u)", Narrow(texturePath_.filename()).c_str(),
                     sourceTexture_.Width(), sourceTexture_.Height());
     }
+
+    ImGui::SeparatorText("ImageGen reference sets");
+    if (ImGui::Button("Add reference OBJ + PNG")) AddReferenceAsset();
+    ImGui::SameLine();
+    ImGui::BeginDisabled(referenceAssets_.empty());
+    if (ImGui::Checkbox("Show in viewport", &referenceAssetsVisible_)) {
+        renderer_.SetReferenceAssetsVisible(referenceAssetsVisible_);
+    }
+    ImGui::EndDisabled();
+    ImGui::TextWrapped("Reference sets are viewport/ImageGen context only. Toggle them off manually while projection painting if desired.");
+    std::optional<std::size_t> removeReference;
+    for (std::size_t i = 0; i < referenceAssets_.size(); ++i) {
+        ImGui::PushID(static_cast<int>(i));
+        ImGui::Text("%s + %s", Narrow(referenceAssets_[i].objPath.filename()).c_str(),
+                    Narrow(referenceAssets_[i].texturePath.filename()).c_str());
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Remove")) removeReference = i;
+        ImGui::PopID();
+    }
+    if (removeReference) RemoveReferenceAsset(*removeReference);
+    if (!referenceAssets_.empty()) {
+        if (ImGui::Button("Clear all references")) {
+            referenceAssets_.clear();
+            renderer_.ClearReferenceAssets();
+            SetStatus("All inference reference sets were removed.");
+        }
+    }
+
+    ImGui::SeparatorText("Viewport display");
+    if (ImGui::Checkbox("Neutral shading", &shadingEnabled_)) {
+        renderer_.SetShadingEnabled(shadingEnabled_);
+    }
+    ImGui::SameLine();
+    ImGui::BeginDisabled(!meshLoaded_ || captured_);
+    if (ImGui::Button("Fit primary view (F)")) FitCamera();
+    ImGui::EndDisabled();
+    ImGui::TextDisabled("Shading is off by default; Base Color is shown unchanged.");
 
     ImGui::SeparatorText("Mode");
     if (ImGui::RadioButton("Navigate", editMode_ == EditMode::Navigate)) editMode_ = EditMode::Navigate;
@@ -424,6 +537,9 @@ bool Application::OpenObj() {
         SetStatus(error, true);
         return false;
     }
+    camera_.yaw = 0.0f;
+    camera_.pitch = 0.15f;
+    camera_.fovDegrees = 45.0f;
     FitCamera();
     SetStatus(error.empty() ? "OBJ loaded." : error);
     return true;
@@ -473,6 +589,54 @@ bool Application::OpenProjection() {
     projectionLoaded_ = true;
     renderer_.SetProjectionPreview(true);
     SetStatus("External projection PNG loaded.");
+    return true;
+}
+
+bool Application::AddReferenceAsset() {
+    const auto objPath = OpenFileDialog(L"Open inference reference OBJ",
+                                        L"Wavefront OBJ (*.obj)\0*.obj\0\0");
+    if (objPath.empty()) return false;
+    const auto texturePath = OpenFileDialog(L"Open texture for the reference OBJ",
+                                            L"PNG image (*.png)\0*.png\0\0");
+    if (texturePath.empty()) return false;
+
+    Mesh mesh;
+    TextureImage texture;
+    std::string error;
+    if (!mesh.LoadObj(objPath, error)) {
+        SetStatus("Reference OBJ: " + error, true);
+        return false;
+    }
+    if (!texture.LoadPng(texturePath, error)) {
+        SetStatus("Reference texture: " + error, true);
+        return false;
+    }
+    if (!renderer_.AddReferenceAsset(mesh, texture, error)) {
+        SetStatus(error, true);
+        return false;
+    }
+    referenceAssets_.push_back({std::move(mesh), std::move(texture), objPath, texturePath});
+    renderer_.SetReferenceAssetsVisible(referenceAssetsVisible_);
+    SetStatus("Inference reference OBJ + PNG added. It will never be baked or saved.");
+    return true;
+}
+
+void Application::RemoveReferenceAsset(const std::size_t index) {
+    if (index >= referenceAssets_.size()) return;
+    referenceAssets_.erase(referenceAssets_.begin() + static_cast<std::ptrdiff_t>(index));
+    if (RebuildReferenceAssets()) SetStatus("Inference reference set removed.");
+}
+
+bool Application::RebuildReferenceAssets() {
+    renderer_.ClearReferenceAssets();
+    std::string error;
+    for (const auto& asset : referenceAssets_) {
+        if (!renderer_.AddReferenceAsset(asset.mesh, asset.texture, error)) {
+            SetStatus("Could not rebuild reference viewport assets: " + error, true);
+            return false;
+        }
+    }
+    renderer_.SetReferenceAssetsVisible(referenceAssetsVisible_);
     return true;
 }
 
@@ -534,10 +698,37 @@ void Application::FitCamera() {
     const Vec3& low = mesh_.BoundsMin();
     const Vec3& high = mesh_.BoundsMax();
     camera_.target = {(low.x + high.x) * 0.5f, (low.y + high.y) * 0.5f, (low.z + high.z) * 0.5f};
+    const float cp = std::cos(camera_.pitch);
+    const Vec3 eyeDirection = Normalize({std::sin(camera_.yaw) * cp,
+                                         std::sin(camera_.pitch),
+                                         std::cos(camera_.yaw) * cp});
+    const Vec3 forward{-eyeDirection.x, -eyeDirection.y, -eyeDirection.z};
+    const Vec3 right = Normalize(Cross({0, 1, 0}, forward));
+    const Vec3 up = Normalize(Cross(forward, right));
+    const float aspect = renderer_.ViewportHeight() > 0
+        ? static_cast<float>(renderer_.ViewportWidth()) / renderer_.ViewportHeight()
+        : 16.0f / 9.0f;
+    const float tanVertical = std::tan(camera_.fovDegrees * std::numbers::pi_v<float> / 360.0f);
+    const float tanHorizontal = tanVertical * std::max(aspect, 0.1f);
+    float requiredDistance = 0.0f;
+    for (int corner = 0; corner < 8; ++corner) {
+        const Vec3 point{(corner & 1) ? high.x : low.x,
+                         (corner & 2) ? high.y : low.y,
+                         (corner & 4) ? high.z : low.z};
+        const Vec3 delta{point.x - camera_.target.x,
+                         point.y - camera_.target.y,
+                         point.z - camera_.target.z};
+        const float towardEye = Dot(delta, eyeDirection);
+        requiredDistance = std::max(requiredDistance,
+            towardEye + std::abs(Dot(delta, right)) / std::max(tanHorizontal, 0.01f));
+        requiredDistance = std::max(requiredDistance,
+            towardEye + std::abs(Dot(delta, up)) / std::max(tanVertical, 0.01f));
+    }
     const float dx = high.x - low.x;
     const float dy = high.y - low.y;
     const float dz = high.z - low.z;
-    camera_.distance = std::max(std::sqrt(dx * dx + dy * dy + dz * dz) * 1.35f, 0.01f);
+    const float diagonal = std::sqrt(dx * dx + dy * dy + dz * dz);
+    camera_.distance = std::max(requiredDistance * 1.12f, std::max(diagonal * 0.01f, 0.01f));
 }
 
 void Application::HideSelectedFaces() {

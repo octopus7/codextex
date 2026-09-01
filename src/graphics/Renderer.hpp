@@ -35,6 +35,11 @@ public:
     bool SetMesh(const Mesh& mesh, std::string& error);
     bool SetWorkingTexture(const TextureImage& image, std::string& error);
     bool SetProjectionImage(const TextureImage& image, std::string& error);
+    bool AddReferenceAsset(const Mesh& mesh, const TextureImage& texture, std::string& error);
+    void ClearReferenceAssets();
+    void SetReferenceAssetsVisible(bool visible) noexcept { referenceAssetsVisible_ = visible; }
+    [[nodiscard]] bool ReferenceAssetsVisible() const noexcept { return referenceAssetsVisible_; }
+    void SetShadingEnabled(bool enabled) noexcept { shadingEnabled_ = enabled; }
     void SetMask(const MaskImage& mask, int featherRadius);
     void SetHiddenFaces(std::span<const std::uint8_t> hidden);
     void SetSelectedFaces(std::span<const std::uint8_t> selected);
@@ -86,6 +91,7 @@ private:
 
     Microsoft::WRL::ComPtr<ID3D11VertexShader> viewportVs_;
     Microsoft::WRL::ComPtr<ID3D11PixelShader> viewportPs_;
+    Microsoft::WRL::ComPtr<ID3D11PixelShader> referencePs_;
     Microsoft::WRL::ComPtr<ID3D11VertexShader> bakeVs_;
     Microsoft::WRL::ComPtr<ID3D11PixelShader> bakePs_;
     Microsoft::WRL::ComPtr<ID3D11ComputeShader> maskInitCs_;
@@ -103,6 +109,15 @@ private:
     Microsoft::WRL::ComPtr<ID3D11Buffer> frozenIndexBuffer_;
     Microsoft::WRL::ComPtr<ID3D11Buffer> selectionBuffer_;
     Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> selectionSrv_;
+
+    struct ReferenceGpuAsset {
+        Microsoft::WRL::ComPtr<ID3D11Buffer> vertexBuffer;
+        Microsoft::WRL::ComPtr<ID3D11Buffer> indexBuffer;
+        Microsoft::WRL::ComPtr<ID3D11Texture2D> texture;
+        Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> textureSrv;
+        std::uint32_t indexCount{};
+    };
+    std::vector<ReferenceGpuAsset> referenceAssets_;
 
     Microsoft::WRL::ComPtr<ID3D11Texture2D> colorTexture_;
     Microsoft::WRL::ComPtr<ID3D11RenderTargetView> colorRtv_;
@@ -149,6 +164,8 @@ private:
     std::uint32_t textureWidth_{};
     std::uint32_t textureHeight_{};
     bool projectionPreview_{};
+    bool referenceAssetsVisible_{true};
+    bool shadingEnabled_{};
 };
 
 } // namespace codextex

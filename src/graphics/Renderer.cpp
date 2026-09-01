@@ -73,9 +73,12 @@ struct PSOutput {
 PSOutput PSMain(VSOutput input) {
     PSOutput output;
     const float3 albedo = baseColor.Sample(linearSampler, input.uv).rgb;
-    const float3 lightDirection = normalize(float3(-0.35, 0.75, -0.55));
-    const float diffuse = saturate(dot(normalize(input.normal), lightDirection));
-    float3 color = albedo * (0.42 + diffuse * 0.58);
+    float3 color = albedo;
+    if (parameters.w > 0.5) {
+        const float3 lightDirection = normalize(float3(-0.35, 0.75, -0.55));
+        const float diffuse = saturate(dot(normalize(input.normal), lightDirection));
+        color = albedo * (0.42 + diffuse * 0.58);
+    }
     if (parameters.z > 0.5) {
         const float2 screenUv = input.position.xy / parameters.xy;
         const float mask = maskPreview.SampleLevel(linearSampler, screenUv, 0);
@@ -87,6 +90,21 @@ PSOutput PSMain(VSOutput input) {
     }
     output.color = float4(color, 1.0);
     output.triangleId = input.triangleId + 1;
+    output.normal = float4(normalize(input.normal) * 0.5 + 0.5, 1.0);
+    return output;
+}
+
+PSOutput PSReference(VSOutput input) {
+    PSOutput output;
+    const float3 albedo = baseColor.Sample(linearSampler, input.uv).rgb;
+    float3 color = albedo;
+    if (parameters.w > 0.5) {
+        const float3 lightDirection = normalize(float3(-0.35, 0.75, -0.55));
+        const float diffuse = saturate(dot(normalize(input.normal), lightDirection));
+        color = albedo * (0.42 + diffuse * 0.58);
+    }
+    output.color = float4(color, 1.0);
+    output.triangleId = 0;
     output.normal = float4(normalize(input.normal) * 0.5 + 0.5, 1.0);
     return output;
 }
@@ -340,6 +358,7 @@ void Renderer::Present() {
 bool Renderer::CreateShaders(std::string& error) {
     ComPtr<ID3DBlob> viewportVs;
     ComPtr<ID3DBlob> viewportPs;
+    ComPtr<ID3DBlob> referencePs;
     ComPtr<ID3DBlob> bakeVs;
     ComPtr<ID3DBlob> bakePs;
     ComPtr<ID3DBlob> maskInitCs;
@@ -347,6 +366,7 @@ bool Renderer::CreateShaders(std::string& error) {
     ComPtr<ID3DBlob> maskFinalizeCs;
     if (FAILED(CompileShader(kViewportShader, "VSMain", "vs_5_0", viewportVs, error)) ||
         FAILED(CompileShader(kViewportShader, "PSMain", "ps_5_0", viewportPs, error)) ||
+        FAILED(CompileShader(kViewportShader, "PSReference", "ps_5_0", referencePs, error)) ||
         FAILED(CompileShader(kBakeShader, "VSMain", "vs_5_0", bakeVs, error)) ||
         FAILED(CompileShader(kBakeShader, "PSMain", "ps_5_0", bakePs, error)) ||
         FAILED(CompileShader(kMaskComputeShader, "InitSeeds", "cs_5_0", maskInitCs, error)) ||
@@ -358,6 +378,9 @@ bool Renderer::CreateShaders(std::string& error) {
                                               nullptr, viewportVs_.GetAddressOf());
     if (SUCCEEDED(hr)) hr = device_->CreatePixelShader(viewportPs->GetBufferPointer(), viewportPs->GetBufferSize(),
                                                        nullptr, viewportPs_.GetAddressOf());
+    if (SUCCEEDED(hr)) hr = device_->CreatePixelShader(referencePs->GetBufferPointer(),
+                                                       referencePs->GetBufferSize(), nullptr,
+                                                       referencePs_.GetAddressOf());
     if (SUCCEEDED(hr)) hr = device_->CreateVertexShader(bakeVs->GetBufferPointer(), bakeVs->GetBufferSize(),
                                                         nullptr, bakeVs_.GetAddressOf());
     if (SUCCEEDED(hr)) hr = device_->CreatePixelShader(bakePs->GetBufferPointer(), bakePs->GetBufferSize(),
@@ -457,6 +480,42 @@ bool Renderer::SetMesh(const Mesh& mesh, std::string& error) {
     UpdateVisibleIndexBuffer();
     UpdateSelectionBuffer();
     return true;
+}
+
+bool Renderer::AddReferenceAsset(const Mesh& mesh, const TextureImage& texture, std::string& error) {
+    if (mesh.Vertices().empty() || mesh.Indices().empty()) {
+        error = "Reference OBJ contains no triangles.";
+        return false;
+    }
+    ReferenceGpuAsset asset;
+    D3D11_BUFFER_DESC vertexDesc{};
+    vertexDesc.ByteWidth = static_cast<UINT>(mesh.Vertices().size() * sizeof(Vertex));
+    vertexDesc.Usage = D3D11_USAGE_IMMUTABLE;
+    vertexDesc.BindFlags = D3D11_BIND_VERTEX_BUFFER;
+    D3D11_SUBRESOURCE_DATA vertexData{mesh.Vertices().data(), 0, 0};
+    HRESULT hr = device_->CreateBuffer(&vertexDesc, &vertexData, asset.vertexBuffer.GetAddressOf());
+
+    D3D11_BUFFER_DESC indexDesc{};
+    indexDesc.ByteWidth = static_cast<UINT>(mesh.Indices().size() * sizeof(std::uint32_t));
+    indexDesc.Usage = D3D11_USAGE_IMMUTABLE;
+    indexDesc.BindFlags = D3D11_BIND_INDEX_BUFFER;
+    D3D11_SUBRESOURCE_DATA indexData{mesh.Indices().data(), 0, 0};
+    if (SUCCEEDED(hr)) hr = device_->CreateBuffer(&indexDesc, &indexData, asset.indexBuffer.GetAddressOf());
+    if (FAILED(hr)) {
+        error = HrError("Could not upload reference OBJ buffers", hr);
+        return false;
+    }
+    if (!UploadRgbaTexture(texture, false, asset.texture, asset.textureSrv, nullptr, error)) {
+        return false;
+    }
+    asset.indexCount = static_cast<std::uint32_t>(mesh.Indices().size());
+    referenceAssets_.push_back(std::move(asset));
+    error.clear();
+    return true;
+}
+
+void Renderer::ClearReferenceAssets() {
+    referenceAssets_.clear();
 }
 
 void Renderer::UpdateVisibleIndexBuffer() {
@@ -772,8 +831,6 @@ void Renderer::RenderViewport(const std::uint32_t width, const std::uint32_t hei
     context_->ClearRenderTargetView(idRtv_.Get(), zero.data());
     context_->ClearRenderTargetView(normalRtv_.Get(), zero.data());
     context_->ClearDepthStencilView(depthDsv_.Get(), D3D11_CLEAR_DEPTH, 1.0f, 0);
-    if (!vertexBuffer_ || !visibleIndexBuffer_ || !workingSrv_ || visibleIndices_.empty()) return;
-
     D3D11_MAPPED_SUBRESOURCE mapped{};
     if (SUCCEEDED(context_->Map(constants_.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped))) {
         ShaderConstants constants{};
@@ -782,6 +839,7 @@ void Renderer::RenderViewport(const std::uint32_t width, const std::uint32_t hei
         constants.parameters[0] = static_cast<float>(width);
         constants.parameters[1] = static_cast<float>(height);
         constants.parameters[2] = projectionPreview_ && projectionSrv_ && maskSrv_ ? 1.0f : 0.0f;
+        constants.parameters[3] = shadingEnabled_ ? 1.0f : 0.0f;
         std::memcpy(mapped.pData, &constants, sizeof(constants));
         context_->Unmap(constants_.Get(), 0);
     }
@@ -791,17 +849,34 @@ void Renderer::RenderViewport(const std::uint32_t width, const std::uint32_t hei
     const UINT stride = sizeof(Vertex);
     const UINT offset = 0;
     context_->IASetInputLayout(inputLayout_.Get());
-    context_->IASetVertexBuffers(0, 1, vertexBuffer_.GetAddressOf(), &stride, &offset);
-    context_->IASetIndexBuffer(visibleIndexBuffer_.Get(), DXGI_FORMAT_R32_UINT, 0);
     context_->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
     context_->VSSetShader(viewportVs_.Get(), nullptr, 0);
     context_->VSSetConstantBuffers(0, 1, constants_.GetAddressOf());
-    context_->PSSetShader(viewportPs_.Get(), nullptr, 0);
-    ID3D11ShaderResourceView* resources[]{workingSrv_.Get(), selectionSrv_.Get(), projectionSrv_.Get(), maskSrv_.Get()};
-    context_->PSSetShaderResources(0, 4, resources);
+    context_->PSSetConstantBuffers(0, 1, constants_.GetAddressOf());
     context_->PSSetSamplers(0, 1, sampler_.GetAddressOf());
-    context_->DrawIndexed(static_cast<UINT>(visibleIndices_.size()), 0, 0);
     ID3D11ShaderResourceView* nullResources[4]{};
+
+    if (vertexBuffer_ && visibleIndexBuffer_ && workingSrv_ && !visibleIndices_.empty()) {
+        context_->IASetVertexBuffers(0, 1, vertexBuffer_.GetAddressOf(), &stride, &offset);
+        context_->IASetIndexBuffer(visibleIndexBuffer_.Get(), DXGI_FORMAT_R32_UINT, 0);
+        context_->PSSetShader(viewportPs_.Get(), nullptr, 0);
+        ID3D11ShaderResourceView* resources[]{workingSrv_.Get(), selectionSrv_.Get(),
+                                              projectionSrv_.Get(), maskSrv_.Get()};
+        context_->PSSetShaderResources(0, 4, resources);
+        context_->DrawIndexed(static_cast<UINT>(visibleIndices_.size()), 0, 0);
+        context_->PSSetShaderResources(0, 4, nullResources);
+    }
+
+    if (referenceAssetsVisible_) {
+        context_->PSSetShader(referencePs_.Get(), nullptr, 0);
+        for (const auto& asset : referenceAssets_) {
+            context_->IASetVertexBuffers(0, 1, asset.vertexBuffer.GetAddressOf(), &stride, &offset);
+            context_->IASetIndexBuffer(asset.indexBuffer.Get(), DXGI_FORMAT_R32_UINT, 0);
+            context_->PSSetShaderResources(0, 1, asset.textureSrv.GetAddressOf());
+            context_->DrawIndexed(asset.indexCount, 0, 0);
+            context_->PSSetShaderResources(0, 1, nullResources);
+        }
+    }
     context_->PSSetShaderResources(0, 4, nullResources);
 }
 
@@ -817,7 +892,44 @@ bool Renderer::CaptureFrame(const CameraState& camera, TextureImage& image, std:
     D3D11_TEXTURE2D_DESC depthDesc{};
     depthTexture_->GetDesc(&depthDesc);
     if (SUCCEEDED(hr)) hr = device_->CreateTexture2D(&depthDesc, nullptr, frozenDepth_.ReleaseAndGetAddressOf());
-    if (SUCCEEDED(hr)) context_->CopyResource(frozenDepth_.Get(), depthTexture_.Get());
+    ComPtr<ID3D11DepthStencilView> frozenDepthDsv;
+    D3D11_DEPTH_STENCIL_VIEW_DESC dsvDesc{};
+    dsvDesc.Format = DXGI_FORMAT_D32_FLOAT;
+    dsvDesc.ViewDimension = D3D11_DSV_DIMENSION_TEXTURE2D;
+    if (SUCCEEDED(hr)) hr = device_->CreateDepthStencilView(frozenDepth_.Get(), &dsvDesc,
+                                                            frozenDepthDsv.GetAddressOf());
+    if (SUCCEEDED(hr)) {
+        context_->OMSetRenderTargets(0, nullptr, frozenDepthDsv.Get());
+        context_->ClearDepthStencilView(frozenDepthDsv.Get(), D3D11_CLEAR_DEPTH, 1.0f, 0);
+        D3D11_MAPPED_SUBRESOURCE mapped{};
+        hr = context_->Map(constants_.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped);
+        if (SUCCEEDED(hr)) {
+            ShaderConstants constants{};
+            ComputeMatrices(camera, static_cast<float>(viewportWidth_) / viewportHeight_,
+                            constants.worldViewProjection, constants.world, constants.cameraPosition);
+            constants.parameters[0] = static_cast<float>(viewportWidth_);
+            constants.parameters[1] = static_cast<float>(viewportHeight_);
+            std::memcpy(mapped.pData, &constants, sizeof(constants));
+            context_->Unmap(constants_.Get(), 0);
+        }
+    }
+    if (SUCCEEDED(hr)) {
+        const D3D11_VIEWPORT viewport{0, 0, static_cast<float>(viewportWidth_),
+                                      static_cast<float>(viewportHeight_), 0, 1};
+        const UINT stride = sizeof(Vertex);
+        const UINT offset = 0;
+        context_->RSSetViewports(1, &viewport);
+        context_->RSSetState(rasterizer_.Get());
+        context_->IASetInputLayout(inputLayout_.Get());
+        context_->IASetVertexBuffers(0, 1, vertexBuffer_.GetAddressOf(), &stride, &offset);
+        context_->IASetIndexBuffer(visibleIndexBuffer_.Get(), DXGI_FORMAT_R32_UINT, 0);
+        context_->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+        context_->VSSetShader(viewportVs_.Get(), nullptr, 0);
+        context_->VSSetConstantBuffers(0, 1, constants_.GetAddressOf());
+        context_->PSSetShader(nullptr, nullptr, 0);
+        context_->DrawIndexed(static_cast<UINT>(visibleIndices_.size()), 0, 0);
+    }
+    context_->OMSetRenderTargets(0, nullptr, nullptr);
     D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc{};
     srvDesc.Format = DXGI_FORMAT_R32_FLOAT;
     srvDesc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;

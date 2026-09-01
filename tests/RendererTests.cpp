@@ -4,6 +4,7 @@
 #include <Windows.h>
 
 #include <array>
+#include <cmath>
 #include <filesystem>
 #include <fstream>
 #include <string>
@@ -101,22 +102,68 @@ f 5/1 6/2 7/3 8/4
     base.Assign(32, 32, basePixels);
     REQUIRE(renderer.SetWorkingTexture(base, error));
 
+    const auto referenceObjPath = directory / "front-reference.obj";
+    std::ofstream referenceObj(referenceObjPath, std::ios::binary | std::ios::trunc);
+    referenceObj << R"OBJ(
+v -0.8 -0.8 0.15
+v  0.8 -0.8 0.15
+v  0.8  0.8 0.15
+v -0.8  0.8 0.15
+vt 0 0
+vt 1 0
+vt 1 1
+vt 0 1
+f 1/1 2/2 3/3 4/4
+)OBJ";
+    referenceObj.close();
+    codextex::Mesh referenceMesh;
+    REQUIRE(referenceMesh.LoadObj(referenceObjPath, error));
+    std::vector<std::uint8_t> referencePixels(4 * 4 * 4, 255);
+    for (std::size_t i = 0; i < referencePixels.size(); i += 4) {
+        referencePixels[i] = 10;
+        referencePixels[i + 1] = 30;
+        referencePixels[i + 2] = 240;
+    }
+    codextex::TextureImage referenceTexture;
+    referenceTexture.Assign(4, 4, referencePixels);
+    REQUIRE(renderer.AddReferenceAsset(referenceMesh, referenceTexture, error));
+
     codextex::CameraState camera;
     camera.pitch = 0;
     camera.distance = 3;
+    renderer.SetReferenceAssetsVisible(false);
     renderer.RenderViewport(128, 128, camera);
     CHECK(renderer.PickTriangle(64, 64) < 2);
+    codextex::TextureImage unlitCapture;
+    REQUIRE(renderer.CaptureFrame(camera, unlitCapture, error));
+    const std::size_t unlitCenter = (64 * 128 + 64) * 4;
+    CHECK(std::abs(static_cast<int>(unlitCapture.Pixels()[unlitCenter]) - 12) <= 2);
+    CHECK(std::abs(static_cast<int>(unlitCapture.Pixels()[unlitCenter + 1]) - 24) <= 2);
+    CHECK(std::abs(static_cast<int>(unlitCapture.Pixels()[unlitCenter + 2]) - 36) <= 2);
+    renderer.SetShadingEnabled(true);
+    renderer.RenderViewport(128, 128, camera);
+    codextex::TextureImage shadedCapture;
+    REQUIRE(renderer.CaptureFrame(camera, shadedCapture, error));
+    CHECK(shadedCapture.Pixels()[unlitCenter + 2] < unlitCapture.Pixels()[unlitCenter + 2]);
+    renderer.SetShadingEnabled(false);
 
     const std::array<std::uint8_t, 4> hidden{1, 1, 0, 0};
     renderer.SetHiddenFaces(hidden);
+    renderer.SetReferenceAssetsVisible(false);
     renderer.RenderViewport(128, 128, camera);
     const auto exposedTriangle = renderer.PickTriangle(64, 64);
     CHECK(exposedTriangle >= 2);
     CHECK(exposedTriangle < 4);
 
+    renderer.SetReferenceAssetsVisible(true);
+    renderer.RenderViewport(128, 128, camera);
+    CHECK(renderer.PickTriangle(64, 64) == UINT32_MAX);
+
     codextex::TextureImage capture;
     REQUIRE(renderer.CaptureFrame(camera, capture, error));
     REQUIRE(capture.Width() == 128);
+    const std::size_t captureCenter = (64 * 128 + 64) * 4;
+    CHECK(capture.Pixels()[captureCenter + 2] > capture.Pixels()[captureCenter]);
 
     std::vector<std::uint8_t> projectionPixels(128 * 128 * 4, 255);
     for (std::size_t i = 0; i < projectionPixels.size(); i += 4) {

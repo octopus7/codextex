@@ -7,7 +7,15 @@ TEST_CASE("ImageGen prompt declares edit invariants") {
     CHECK(prompt.find("$imagegen") != std::string::npos);
     CHECK(prompt.find("precise-object-edit") != std::string::npos);
     CHECK(prompt.find("preserve camera") != std::string::npos);
+    CHECK(prompt.find("surrounding reference objects") != std::string::npos);
+    CHECK(prompt.find("keep them unchanged") != std::string::npos);
     CHECK(prompt.find("paint worn red leather") != std::string::npos);
+}
+
+TEST_CASE("ImageGen prompt preserves Korean UTF-8 text") {
+    const std::string request = "겨드랑이 안쪽을 붉은 가죽으로 칠해줘";
+    const std::string prompt = codextex::PromptBuilder::GenerationPrompt(request);
+    CHECK(prompt.find(request) != std::string::npos);
 }
 
 TEST_CASE("Mask proposal parses normalized polygons") {

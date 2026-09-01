@@ -40,6 +40,9 @@ private:
     bool OpenObj();
     bool OpenTexture();
     bool OpenProjection();
+    bool AddReferenceAsset();
+    void RemoveReferenceAsset(std::size_t index);
+    bool RebuildReferenceAssets();
     bool SaveTexture(bool choosePath);
     bool CaptureView();
     void CancelProjection();
@@ -68,6 +71,14 @@ private:
     MaskImage mask_;
     CameraState camera_{};
 
+    struct ReferenceAsset {
+        Mesh mesh;
+        TextureImage texture;
+        std::filesystem::path objPath;
+        std::filesystem::path texturePath;
+    };
+    std::vector<ReferenceAsset> referenceAssets_;
+
     std::filesystem::path sessionDirectory_;
     std::filesystem::path texturePath_;
     std::filesystem::path capturePath_;
@@ -77,6 +88,9 @@ private:
     bool captured_{};
     bool projectionLoaded_{};
     bool dirty_{};
+    bool referenceAssetsVisible_{true};
+    bool shadingEnabled_{};
+    bool dockLayoutInitialized_{};
 
     std::vector<std::uint8_t> hiddenFaces_;
     std::vector<std::uint8_t> selectedFaces_;

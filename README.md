@@ -44,14 +44,25 @@ if it is not already present.
 ## Workflow
 
 1. Open an OBJ and a PNG independently.
-2. Orbit to the desired view. In Face mode, click or lasso occluding triangles
+2. Optionally add any number of inference reference OBJ + PNG pairs. They use
+   their authored world coordinates and appear only as viewport/ImageGen context.
+3. Orbit to the desired view. In Face mode, click or lasso occluding triangles
    and hide them to expose recessed areas.
-3. Capture the view. The camera and visible-face set are frozen.
-4. Generate a projection with Codex ImageGen or open an external PNG with the
+4. Capture the view. Visible reference sets are included in the ImageGen image,
+   while the frozen bake depth contains only the primary OBJ.
+5. Generate a projection with Codex ImageGen or open an external PNG with the
    same aspect ratio.
-5. In Mask mode, paint or lasso the projection area, adjust inward feathering,
+6. In Mask mode, optionally turn off `Show in viewport` for the reference sets,
+   paint or lasso the projection area, adjust inward feathering,
    preview, then bake.
-6. Repeat from another view, then save the PNG texture.
+7. Repeat from another view, then save the PNG texture.
+
+The viewport starts in an unlit Base Color mode so PNG texels are displayed
+without lighting multiplication. `Neutral shading` is an optional display and
+capture aid. The first-run docking layout reserves the main central area for the
+3D viewport; `Fit primary view (F)` recenters and tightly frames the editable OBJ.
+The UI loads a Windows Korean font for IME-composed Korean prompt input and keeps
+the completed text as UTF-8 when it is sent to Codex.
 
 Generated images are first produced by Codex's built-in ImageGen at its normal
 Codex-managed location. CodexTex consumes `imageGeneration.savedPath` and
@@ -73,5 +84,8 @@ still requires a locally authenticated ChatGPT Codex installation.
 
 ## Scope
 
-Version 1 supports one OBJ, one UV set, and one PNG Base Color texture. It does
-not write OBJ/MTL/project files, unwrap UVs, or manage PBR texture sets.
+Version 1 supports one editable OBJ, one UV set, and one editable PNG Base Color texture,
+plus read-only inference reference pairs. It does
+not write OBJ/MTL/project files, unwrap UVs, or manage PBR texture sets. Inference
+reference pairs are read-only session assets: they cannot be selected, hidden by
+face tools, projected into, baked, or saved by CodexTex.
