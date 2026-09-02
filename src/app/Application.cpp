@@ -164,16 +164,11 @@ bool SupportsEffort(const CodexModelInfo& model, const std::string& effort) {
         [&effort](const CodexReasoningOption& option) { return option.value == effort; });
 }
 
-void SectionHeaderWithHelp(const char* id, const char* title, const char* help) {
-    ImGui::Separator();
-    ImGui::AlignTextToFramePadding();
-    ImGui::TextUnformatted(title);
-    ImGui::SameLine(0.0f, ImGui::GetStyle().ItemInnerSpacing.x);
-
+void HelpIcon(const char* id, const char* help) {
     ImGui::PushID(id);
     const float side = ImGui::GetFrameHeight();
     const ImVec2 position = ImGui::GetCursorScreenPos();
-    ImGui::InvisibleButton("##SectionHelp", ImVec2(side, side));
+    ImGui::InvisibleButton("##Help", ImVec2(side, side));
     const bool hovered = ImGui::IsItemHovered();
     const ImU32 color = ImGui::GetColorU32(hovered ? ImGuiCol_Text : ImGuiCol_TextDisabled);
     const ImVec2 center(position.x + side * 0.5f, position.y + side * 0.5f);
@@ -189,6 +184,14 @@ void SectionHeaderWithHelp(const char* id, const char* title, const char* help) 
         ImGui::EndTooltip();
     }
     ImGui::PopID();
+}
+
+void SectionHeaderWithHelp(const char* id, const char* title, const char* help) {
+    ImGui::Separator();
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextUnformatted(title);
+    ImGui::SameLine(0.0f, ImGui::GetStyle().ItemInnerSpacing.x);
+    HelpIcon(id, help);
 }
 
 bool LoadUiFont(ImGuiIO& io, const float dpiScale, const UiLanguage language) {
@@ -912,9 +915,12 @@ void Application::DrawTools() {
         ImGui::EndChild();
     }
     if (meshLoaded_ && mesh_.UvOverlapCount() > 0) {
+        ImGui::AlignTextToFramePadding();
         ImGui::TextColored(ImVec4(1, 0.65f, 0.2f, 1), Tr("Warning: %zu overlapping UV pair(s)"),
                            mesh_.UvOverlapCount());
-        ImGui::TextWrapped(Tr("Shared or mirrored UVs may let the opposite local-X side overwrite the bake."));
+        ImGui::SameLine(0.0f, ImGui::GetStyle().ItemInnerSpacing.x);
+        HelpIcon("UvOverlapWarning",
+                 Tr("Shared or mirrored UVs may let the opposite local-X side overwrite the bake."));
     }
 
     SectionHeaderWithHelp(
