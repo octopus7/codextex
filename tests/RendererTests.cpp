@@ -108,6 +108,9 @@ f 1/1 2/2 3/3 4/4
     renderer.SetViewportBackgroundColor({0.20f, 0.40f, 0.60f});
     renderer.SetOriginalTexturePreview(false);
     renderer.RenderViewport(64, 64, camera);
+    D3D11_SHADER_RESOURCE_VIEW_DESC viewportView{};
+    renderer.ViewportTexture()->GetDesc(&viewportView);
+    CHECK(viewportView.Format == DXGI_FORMAT_R8G8B8A8_UNORM);
     codextex::TextureImage workingCapture;
     REQUIRE(renderer.CaptureFrame(camera, workingCapture, error));
     const std::size_t center = (32 * 64 + 32) * 4;

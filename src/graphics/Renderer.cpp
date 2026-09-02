@@ -833,10 +833,26 @@ bool Renderer::CreateViewportTargets(const std::uint32_t width, const std::uint3
     desc.Usage = D3D11_USAGE_DEFAULT;
     desc.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
 
-    desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM_SRGB;
+    // The scene is rendered through an sRGB RTV so shader output remains linear, but
+    // Dear ImGui composites into an UNORM swap chain. Expose an UNORM SRV to ImGui so
+    // the already encoded viewport pixels are not decoded a second time.
+    desc.Format = DXGI_FORMAT_R8G8B8A8_TYPELESS;
     HRESULT hr = device_->CreateTexture2D(&desc, nullptr, colorTexture_.GetAddressOf());
-    if (SUCCEEDED(hr)) hr = device_->CreateRenderTargetView(colorTexture_.Get(), nullptr, colorRtv_.GetAddressOf());
-    if (SUCCEEDED(hr)) hr = device_->CreateShaderResourceView(colorTexture_.Get(), nullptr, colorSrv_.GetAddressOf());
+    D3D11_RENDER_TARGET_VIEW_DESC colorRtvDesc{};
+    colorRtvDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM_SRGB;
+    colorRtvDesc.ViewDimension = D3D11_RTV_DIMENSION_TEXTURE2D;
+    if (SUCCEEDED(hr)) {
+        hr = device_->CreateRenderTargetView(colorTexture_.Get(), &colorRtvDesc,
+                                             colorRtv_.GetAddressOf());
+    }
+    D3D11_SHADER_RESOURCE_VIEW_DESC colorSrvDesc{};
+    colorSrvDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    colorSrvDesc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
+    colorSrvDesc.Texture2D.MipLevels = 1;
+    if (SUCCEEDED(hr)) {
+        hr = device_->CreateShaderResourceView(colorTexture_.Get(), &colorSrvDesc,
+                                               colorSrv_.GetAddressOf());
+    }
 
     desc.Format = DXGI_FORMAT_R32_UINT;
     if (SUCCEEDED(hr)) hr = device_->CreateTexture2D(&desc, nullptr, idTexture_.GetAddressOf());
