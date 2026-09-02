@@ -631,6 +631,8 @@ bool Renderer::SetWorkingTexture(const TextureImage& image, std::string& error) 
     if (!UploadRgbaTexture(image, true, workingTexture_, workingSrv_, &workingRtv_, error)) return false;
     textureWidth_ = image.Width();
     textureHeight_ = image.Height();
+    originalTexturePreview_ = false;
+    projectionPreviewMode_ = ProjectionPreviewMode::Disabled;
     return true;
 }
 
@@ -651,6 +653,8 @@ bool Renderer::SetSourceAndWorkingTexture(const TextureImage& image, std::string
     workingRtv_ = std::move(workingRtv);
     textureWidth_ = image.Width();
     textureHeight_ = image.Height();
+    originalTexturePreview_ = false;
+    projectionPreviewMode_ = ProjectionPreviewMode::Disabled;
     return true;
 }
 
@@ -1147,6 +1151,8 @@ bool Renderer::BakeProjection(const float maxAngleDegrees, std::string& error) {
     context_->OMSetBlendState(nullptr, blendFactor, 0xffffffffu);
     context_->PSSetShaderResources(0, 3, nullResources);
     context_->Flush();
+    originalTexturePreview_ = false;
+    projectionPreviewMode_ = ProjectionPreviewMode::Disabled;
     error.clear();
     return true;
 }

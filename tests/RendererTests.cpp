@@ -142,6 +142,99 @@ f 1/1 2/2 3/3 4/4
     renderer.Shutdown();
 }
 
+TEST_CASE("WARP bake publishes the latest working texture after previewing original") {
+    HiddenWindow window;
+    REQUIRE(window.Get() != nullptr);
+
+    codextex::Renderer renderer;
+    std::string error;
+    REQUIRE(renderer.Initialize(window.Get(), error, true));
+
+    const auto directory = std::filesystem::temp_directory_path() / "codextex-tests";
+    std::filesystem::create_directories(directory);
+    const auto objPath = directory / "shared-working-texture-quad.obj";
+    std::ofstream obj(objPath, std::ios::binary | std::ios::trunc);
+    obj << R"OBJ(
+v -1 -1 0
+v  1 -1 0
+v  1  1 0
+v -1  1 0
+vt 0 0
+vt 1 0
+vt 1 1
+vt 0 1
+f 1/1 2/2 3/3 4/4
+)OBJ";
+    obj.close();
+
+    codextex::Mesh mesh;
+    REQUIRE(mesh.LoadObj(objPath, error));
+    REQUIRE(renderer.SetMesh(mesh, error));
+
+    const auto solidImage = [](const std::uint8_t red, const std::uint8_t green,
+                               const std::uint8_t blue, const std::uint32_t size) {
+        std::vector<std::uint8_t> pixels(
+            static_cast<std::size_t>(size) * size * 4, 255);
+        for (std::size_t i = 0; i < pixels.size(); i += 4) {
+            pixels[i] = red;
+            pixels[i + 1] = green;
+            pixels[i + 2] = blue;
+        }
+        codextex::TextureImage image;
+        image.Assign(size, size, std::move(pixels));
+        return image;
+    };
+
+    const codextex::TextureImage original = solidImage(230, 20, 20, 16);
+    const codextex::TextureImage generated = solidImage(20, 230, 20, 128);
+    REQUIRE(renderer.SetSourceAndWorkingTexture(original, error));
+
+    codextex::CameraState camera;
+    camera.pitch = 0;
+    camera.distance = 3;
+    codextex::TextureImage capture;
+    codextex::Renderer::ProjectionFrame frame;
+    REQUIRE(renderer.CaptureFrame(camera, 128, 128, capture, frame, error));
+    REQUIRE(renderer.SetProjectionImage(generated, error));
+    codextex::MaskImage mask;
+    mask.Resize(128, 128, true);
+    renderer.SetMask(mask, 0);
+
+    renderer.SetOriginalTexturePreview(true);
+    renderer.SetProjectionPreviewMode(codextex::ProjectionPreviewMode::Full);
+    REQUIRE(renderer.BakeProjection(75, error));
+
+    codextex::TextureImage baked;
+    REQUIRE(renderer.ReadWorkingTexture(baked, error));
+    const std::size_t textureCenter = (8 * 16 + 8) * 4;
+    CHECK(baked.Pixels()[textureCenter] < 50);
+    CHECK(baked.Pixels()[textureCenter + 1] > 200);
+    CHECK(baked.Pixels()[textureCenter + 2] < 50);
+
+    renderer.RenderViewport(128, 128, camera);
+    codextex::TextureImage workingCapture;
+    REQUIRE(renderer.CaptureFrame(camera, workingCapture, error));
+    const std::size_t viewportCenter = (64 * 128 + 64) * 4;
+    CHECK(workingCapture.Pixels()[viewportCenter] < 50);
+    CHECK(workingCapture.Pixels()[viewportCenter + 1] > 200);
+    CHECK(workingCapture.Pixels()[viewportCenter + 2] < 50);
+
+    renderer.SetOriginalTexturePreview(true);
+    codextex::TextureImage originalCapture;
+    REQUIRE(renderer.CaptureFrame(camera, originalCapture, error));
+    CHECK(originalCapture.Pixels()[viewportCenter] > 200);
+    CHECK(originalCapture.Pixels()[viewportCenter + 1] < 50);
+    CHECK(originalCapture.Pixels()[viewportCenter + 2] < 50);
+
+    renderer.SetOriginalTexturePreview(false);
+    codextex::TextureImage sharedWorkingCapture;
+    REQUIRE(renderer.CaptureFrame(camera, sharedWorkingCapture, error));
+    CHECK(sharedWorkingCapture.Pixels()[viewportCenter] < 50);
+    CHECK(sharedWorkingCapture.Pixels()[viewportCenter + 1] > 200);
+    CHECK(sharedWorkingCapture.Pixels()[viewportCenter + 2] < 50);
+    renderer.Shutdown();
+}
+
 TEST_CASE("WARP projection viewport switches between masked original and full generated views") {
     HiddenWindow window;
     REQUIRE(window.Get() != nullptr);
