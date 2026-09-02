@@ -480,6 +480,7 @@ bool CodexBridge::BeginGeneration(const std::uint64_t jobId,
         std::scoped_lock lock(stateMutex_);
         auto& job = jobs_[jobId];
         job.busy = true;
+        job.generatedImageAccepted = false;
         job.model = model;
         job.reasoningEffort = reasoningEffort;
         threadId = job.threadId;
@@ -515,6 +516,34 @@ bool CodexBridge::BeginGeneration(const std::uint64_t jobId,
         event.jobId = jobId;
         PushEvent(std::move(event));
         return false;
+    }
+}
+
+void CodexBridge::FinishAfterGeneratedImage(const std::uint64_t jobId) {
+    std::string threadId;
+    std::string activeTurn;
+    {
+        std::scoped_lock lock(stateMutex_);
+        const auto found = jobs_.find(jobId);
+        if (found == jobs_.end()) return;
+        auto& job = found->second;
+        job.generatedImageAccepted = true;
+        if (!job.busy) return;
+        threadId = job.threadId;
+        activeTurn = job.activeTurnId;
+        job.busy = false;
+        job.activeTurnId.clear();
+    }
+    if (threadId.empty() || activeTurn.empty()) return;
+
+    // The generated PNG has already been copied and permanently archived by the
+    // application. Do not keep the UI waiting for post-generation assistant text.
+    // This request deliberately has no pending promise so the UI thread never blocks.
+    const std::uint64_t id = nextRequestId_++;
+    if (!SendLine({{"method", "turn/interrupt"}, {"id", id},
+                   {"params", {{"threadId", threadId}, {"turnId", activeTurn}}}})) {
+        LogDiagnostic("Could not interrupt completed ImageGen turn for job " +
+                      std::to_string(jobId) + ".");
     }
 }
 
@@ -702,17 +731,19 @@ void CodexBridge::HandleMessage(const nlohmann::json& message) {
             }
         }
     } else if (method == "turn/completed") {
+        bool generatedImageAccepted = false;
         {
             std::scoped_lock lock(stateMutex_);
             auto found = jobs_.find(*jobId);
             if (found != jobs_.end()) {
+                generatedImageAccepted = found->second.generatedImageAccepted;
                 found->second.busy = false;
                 found->second.activeTurnId.clear();
             }
         }
         const auto& turn = params.value("turn", nlohmann::json::object());
         const std::string status = turn.value("status", "completed");
-        if (status != "completed") {
+        if (status != "completed" && !generatedImageAccepted) {
             pushForJob({CodexEventType::Error, "Codex turn ended with status: " + status});
         }
     }

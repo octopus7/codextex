@@ -176,6 +176,45 @@ TEST_CASE("App Server mock interrupts an active generation") {
     }));
 }
 
+TEST_CASE("Archived generated image finishes without waiting for assistant text") {
+    ScopedEnvironment mode(L"CODEXTEX_MOCK_MODE", L"image-without-turn-completion");
+    const auto session = Session(L"mock-finish-after-image");
+    const auto sourceImage = session / "mock-source.png";
+    const auto capture = session / "capture.png";
+    std::ofstream(sourceImage, std::ios::binary) << "mock-png";
+    std::ofstream(capture, std::ios::binary) << "mock-capture";
+    ScopedEnvironment image(L"CODEXTEX_MOCK_IMAGE", sourceImage.c_str());
+
+    codextex::CodexBridge bridge;
+    REQUIRE(bridge.Start(session, std::filesystem::path(CODEXTEX_MOCK_CODEX_PATH)));
+    constexpr std::uint64_t jobId = 12;
+    REQUIRE(bridge.BeginGeneration(jobId, capture, "finish after image",
+                                   "gpt-5.6-sol", "medium"));
+
+    std::vector<codextex::CodexEvent> events;
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+    while (std::chrono::steady_clock::now() < deadline) {
+        auto next = bridge.PollEvents();
+        events.insert(events.end(), std::make_move_iterator(next.begin()),
+                      std::make_move_iterator(next.end()));
+        if (std::ranges::any_of(events, [](const auto& event) {
+                return event.type == codextex::CodexEventType::GeneratedImage;
+            })) {
+            break;
+        }
+        Sleep(10);
+    }
+    REQUIRE(bridge.IsBusy(jobId));
+    bridge.FinishAfterGeneratedImage(jobId);
+    CHECK_FALSE(bridge.IsBusy(jobId));
+
+    Sleep(50);
+    const auto finalEvents = bridge.PollEvents();
+    CHECK_FALSE(std::ranges::any_of(finalEvents, [](const auto& event) {
+        return event.type == codextex::CodexEventType::Error;
+    }));
+}
+
 TEST_CASE("App Server routes concurrent projection jobs independently") {
     ScopedEnvironment mode(L"CODEXTEX_MOCK_MODE", L"hold-generation");
     const auto session = Session(L"mock-concurrent");

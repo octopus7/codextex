@@ -68,6 +68,7 @@ public:
     bool BeginGeneration(std::uint64_t jobId, const std::filesystem::path& capturePath,
                          const std::string& userPrompt, const std::string& model,
                          const std::string& reasoningEffort);
+    void FinishAfterGeneratedImage(std::uint64_t jobId);
     void Cancel(std::uint64_t jobId);
     void Forget(std::uint64_t jobId);
     std::vector<CodexEvent> PollEvents();
@@ -81,6 +82,7 @@ private:
         std::string model;
         std::string reasoningEffort;
         bool busy{};
+        bool generatedImageAccepted{};
     };
 
     bool EnsureThread(std::uint64_t jobId, const std::string& model);

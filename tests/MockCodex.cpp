@@ -96,8 +96,10 @@ int main() {
                 Notify("item/completed", {{"threadId", threadId}, {"turnId", turnId},
                     {"item", {{"type", "imageGeneration"}, {"status", "completed"},
                               {"savedPath", Environment("CODEXTEX_MOCK_IMAGE")}}}});
-                Notify("turn/completed", {{"threadId", threadId}, {"turnId", turnId},
-                    {"turn", {{"id", turnId}, {"status", "completed"}}}});
+                if (mode != "image-without-turn-completion") {
+                    Notify("turn/completed", {{"threadId", threadId}, {"turnId", turnId},
+                        {"turn", {{"id", turnId}, {"status", "completed"}}}});
+                }
             }
         } else if (method == "turn/interrupt") {
             Respond(request, nlohmann::json::object());

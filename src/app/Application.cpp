@@ -2074,6 +2074,7 @@ void Application::HandleCodexEvents() {
             tab->projectionLoaded = true;
             tab->status = "ImageGen result archived; refine the mask before baking.";
             tab->statusIsError = false;
+            codex_.FinishAfterGeneratedImage(tab->id);
             if (activeProjectionId_ == tab->id) {
                 renderer_.SetProjectionPreviewMode(ProjectionPreviewMode::Masked);
             }
