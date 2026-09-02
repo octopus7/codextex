@@ -1,7 +1,5 @@
 #pragma once
 
-#include "core/Types.hpp"
-
 #include <Windows.h>
 #include <nlohmann/json.hpp>
 
@@ -26,7 +24,6 @@ enum class CodexEventType {
     Status,
     Progress,
     GeneratedImage,
-    MaskProposalReady,
     Error,
 };
 
@@ -34,7 +31,6 @@ struct CodexEvent {
     CodexEventType type{CodexEventType::Status};
     std::string message;
     std::filesystem::path imagePath;
-    std::optional<MaskProposal> maskProposal;
     std::uint64_t jobId{};
 };
 
@@ -72,20 +68,14 @@ public:
     bool BeginGeneration(std::uint64_t jobId, const std::filesystem::path& capturePath,
                          const std::string& userPrompt, const std::string& model,
                          const std::string& reasoningEffort);
-    bool BeginMaskProposal(std::uint64_t jobId, const std::filesystem::path& capturePath,
-                           const std::filesystem::path& generatedPath,
-                           const std::string& model, const std::string& reasoningEffort);
     void Cancel(std::uint64_t jobId);
     void Forget(std::uint64_t jobId);
     std::vector<CodexEvent> PollEvents();
 
 private:
-    enum class Operation { None, Generation, Mask };
-
     bool LaunchProcess();
     bool InitializeProtocol();
     struct JobState {
-        Operation operation{Operation::None};
         std::string threadId;
         std::string activeTurnId;
         std::string model;

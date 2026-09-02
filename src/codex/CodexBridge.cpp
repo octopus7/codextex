@@ -124,22 +124,6 @@ std::vector<LaunchCandidate> FindCodexCommands(
     return candidates;
 }
 
-std::string StripCodeFence(std::string text) {
-    const auto first = text.find_first_not_of(" \t\r\n");
-    if (first == std::string::npos) {
-        return {};
-    }
-    text.erase(0, first);
-    if (text.rfind("```", 0) == 0) {
-        const auto newline = text.find('\n');
-        const auto end = text.rfind("```");
-        if (newline != std::string::npos && end != std::string::npos && end > newline) {
-            text = text.substr(newline + 1, end - newline - 1);
-        }
-    }
-    return text;
-}
-
 std::string LocalTimestamp() {
     SYSTEMTIME time{};
     GetLocalTime(&time);
@@ -496,7 +480,6 @@ bool CodexBridge::BeginGeneration(const std::uint64_t jobId,
         std::scoped_lock lock(stateMutex_);
         auto& job = jobs_[jobId];
         job.busy = true;
-        job.operation = Operation::Generation;
         job.model = model;
         job.reasoningEffort = reasoningEffort;
         threadId = job.threadId;
@@ -525,70 +508,10 @@ bool CodexBridge::BeginGeneration(const std::uint64_t jobId,
             std::scoped_lock lock(stateMutex_);
             auto& job = jobs_[jobId];
             job.busy = false;
-            job.operation = Operation::None;
             job.activeTurnId.clear();
         }
         CodexEvent event{CodexEventType::Error,
                          std::string("Could not start ImageGen: ") + exception.what()};
-        event.jobId = jobId;
-        PushEvent(std::move(event));
-        return false;
-    }
-}
-
-bool CodexBridge::BeginMaskProposal(const std::uint64_t jobId,
-                                    const std::filesystem::path& capturePath,
-                                    const std::filesystem::path& generatedPath,
-                                    const std::string& model,
-                                    const std::string& reasoningEffort) {
-    if (!available_ || IsBusy(jobId) || !std::filesystem::exists(capturePath) ||
-        !std::filesystem::exists(generatedPath) || model.empty() ||
-        reasoningEffort.empty()) {
-        return false;
-    }
-    if (!EnsureThread(jobId, model)) {
-        return false;
-    }
-    std::string threadId;
-    {
-        std::scoped_lock lock(stateMutex_);
-        auto& job = jobs_[jobId];
-        job.busy = true;
-        job.operation = Operation::Mask;
-        job.model = model;
-        job.reasoningEffort = reasoningEffort;
-        threadId = job.threadId;
-    }
-    try {
-        const auto result = SendRequest(
-            "turn/start",
-            {{"threadId", threadId},
-             {"model", model},
-             {"effort", reasoningEffort},
-             {"input",
-              {{{"type", "text"}, {"text", PromptBuilder::MaskPrompt()}},
-               {{"type", "localImage"}, {"path", PathUtf8(capturePath)}},
-               {{"type", "localImage"}, {"path", PathUtf8(generatedPath)}}}},
-             {"outputSchema", PromptBuilder::MaskOutputSchema()}});
-        {
-            std::scoped_lock lock(stateMutex_);
-            auto& job = jobs_[jobId];
-            if (job.busy) job.activeTurnId = result.at("turn").at("id").get<std::string>();
-        }
-        CodexEvent event{CodexEventType::Progress, "Codex mask proposal started."};
-        event.jobId = jobId;
-        PushEvent(std::move(event));
-        return true;
-    } catch (const std::exception& exception) {
-        {
-            std::scoped_lock lock(stateMutex_);
-            auto& job = jobs_[jobId];
-            job.busy = false;
-            job.operation = Operation::None;
-            job.activeTurnId.clear();
-        }
-        CodexEvent event{CodexEventType::Error,
-                         std::string("Could not start mask proposal: ") + exception.what()};
         event.jobId = jobId;
         PushEvent(std::move(event));
         return false;
@@ -713,7 +636,6 @@ void CodexBridge::ReadLoop() {
         for (auto& [jobId, job] : jobs_) {
             if (job.busy) interruptedJobs.push_back(jobId);
             job.busy = false;
-            job.operation = Operation::None;
             job.activeTurnId.clear();
         }
     }
@@ -751,14 +673,12 @@ void CodexBridge::HandleMessage(const nlohmann::json& message) {
     const nlohmann::json& params = message.value("params", nlohmann::json::object());
     const auto jobId = FindJob(params);
     if (!jobId) return;
-    Operation operation = Operation::None;
     bool knownJob = false;
     {
         std::scoped_lock lock(stateMutex_);
         const auto found = jobs_.find(*jobId);
         if (found != jobs_.end()) {
             knownJob = true;
-            operation = found->second.operation;
         }
     }
     if (!knownJob) return;
@@ -780,23 +700,6 @@ void CodexBridge::HandleMessage(const nlohmann::json& message) {
                     pushForJob({CodexEventType::GeneratedImage, "ImageGen completed.", copied});
                 }
             }
-        } else if (type == "agentMessage" && method == "item/completed" &&
-                   operation == Operation::Mask) {
-            try {
-                const auto parsed = nlohmann::json::parse(StripCodeFence(item.value("text", "")));
-                MaskProposal proposal;
-                std::string error;
-                if (PromptBuilder::ParseMaskProposal(parsed, proposal, error)) {
-                    CodexEvent event{CodexEventType::MaskProposalReady, "Mask proposal completed."};
-                    event.maskProposal = std::move(proposal);
-                    pushForJob(std::move(event));
-                } else {
-                    pushForJob({CodexEventType::Error, error});
-                }
-            } catch (const std::exception& exception) {
-                pushForJob({CodexEventType::Error,
-                            std::string("Could not parse mask proposal: ") + exception.what()});
-            }
         }
     } else if (method == "turn/completed") {
         {
@@ -805,7 +708,6 @@ void CodexBridge::HandleMessage(const nlohmann::json& message) {
             if (found != jobs_.end()) {
                 found->second.busy = false;
                 found->second.activeTurnId.clear();
-                found->second.operation = Operation::None;
             }
         }
         const auto& turn = params.value("turn", nlohmann::json::object());

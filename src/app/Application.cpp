@@ -1003,12 +1003,6 @@ void Application::DrawTools() {
         }
         if (tab->projectionLoaded) {
             ImGui::Text(Tr("Projection: %s"), Narrow(tab->projectionPath.filename()).c_str());
-            ImGui::BeginDisabled(!codex_.IsAvailable() || codex_.IsBusy(tab->id) || tab->applied);
-            if (ImGui::Button(Tr("Suggest mask with Codex"))) {
-                codex_.BeginMaskProposal(tab->id, tab->capturePath, tab->projectionPath,
-                                         tab->model, tab->reasoningEffort);
-            }
-            ImGui::EndDisabled();
         }
 
         ImGui::SeparatorText(Tr("Mask and bake"));
@@ -1765,13 +1759,6 @@ void Application::HandleCodexEvents() {
             if (activeProjectionId_ == tab->id) {
                 renderer_.SetProjectionPreviewMode(ProjectionPreviewMode::Masked);
             }
-        } else if (event.type == CodexEventType::MaskProposalReady && event.maskProposal) {
-            tab->mask.Clear(false);
-            tab->mask.ApplyProposal(*event.maskProposal);
-            tab->featherRadius = event.maskProposal->suggestedFeatherPx;
-            ApplyMaskChange(*tab);
-            tab->status = "Codex mask proposal applied; refine it before baking.";
-            tab->statusIsError = false;
         } else {
             tab->status = event.message;
             tab->statusIsError = event.type == CodexEventType::Error;

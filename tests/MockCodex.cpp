@@ -89,24 +89,10 @@ int main() {
                 RespondError(request, "turn/start requires model and effort");
                 continue;
             }
-            const bool mask = request.at("params").contains("outputSchema");
             const std::string threadId = request.at("params").at("threadId").get<std::string>();
-            const std::string turnId = (mask ? "mask-turn-" : "generation-turn-") +
-                std::to_string(++turnCounter);
+            const std::string turnId = "generation-turn-" + std::to_string(++turnCounter);
             Respond(request, {{"turn", {{"id", turnId}}}});
-            if (mask) {
-                const nlohmann::json proposal = {
-                    {"polygons", {{{"operation", "include"},
-                                    {"points", {{0.2, 0.2}, {0.8, 0.2}, {0.5, 0.8}}}}}},
-                    {"confidence", 0.8},
-                    {"suggestedFeatherPx", 12},
-                    {"rationale", "mock visible surface"},
-                };
-                Notify("item/completed", {{"threadId", threadId}, {"turnId", turnId},
-                    {"item", {{"type", "agentMessage"}, {"text", proposal.dump()}}}});
-                Notify("turn/completed", {{"threadId", threadId}, {"turnId", turnId},
-                    {"turn", {{"id", turnId}, {"status", "completed"}}}});
-            } else if (mode != "hold-generation") {
+            if (mode != "hold-generation") {
                 Notify("item/completed", {{"threadId", threadId}, {"turnId", turnId},
                     {"item", {{"type", "imageGeneration"}, {"status", "completed"},
                               {"savedPath", Environment("CODEXTEX_MOCK_IMAGE")}}}});

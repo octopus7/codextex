@@ -123,17 +123,6 @@ void MaskImage::ApplyLasso(const std::span<const Vec2> pixelPoints, const bool i
     }
 }
 
-void MaskImage::ApplyProposal(const MaskProposal& proposal) {
-    for (const MaskPolygon& polygon : proposal.polygons) {
-        std::vector<Vec2> pixels;
-        pixels.reserve(polygon.normalizedPoints.size());
-        for (const Vec2& point : polygon.normalizedPoints) {
-            pixels.push_back({point.x * static_cast<float>(width_), point.y * static_cast<float>(height_)});
-        }
-        ApplyLasso(pixels, polygon.operation == MaskPolygon::Operation::Include);
-    }
-}
-
 void MaskImage::RecomputeInwardFeather(const int radiusPx) {
     if (width_ == 0 || height_ == 0) {
         return;

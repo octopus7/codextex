@@ -102,7 +102,7 @@ TEST_CASE("App Server can launch through a codex.cmd command shim") {
     CHECK(bridge.AvailabilityMessage().find("codex.cmd") != std::string::npos);
 }
 
-TEST_CASE("App Server mock delivers generated images and structured mask proposals") {
+TEST_CASE("App Server mock delivers generated images") {
     ScopedEnvironment mode(L"CODEXTEX_MOCK_MODE", L"success");
     const auto session = Session(L"mock-success");
     const auto sourceImage = session / "mock-source.png";
@@ -125,15 +125,6 @@ TEST_CASE("App Server mock delivers generated images and structured mask proposa
     REQUIRE(generated != generationEvents.end());
     CHECK(generated->jobId == jobId);
     CHECK(std::filesystem::exists(generated->imagePath));
-
-    REQUIRE(bridge.BeginMaskProposal(jobId, capture, generated->imagePath,
-                                     "gpt-5.6-sol", "medium"));
-    const auto maskEvents = WaitForIdle(bridge, jobId);
-    const auto proposal = std::find_if(maskEvents.begin(), maskEvents.end(),
-        [](const auto& event) { return event.type == codextex::CodexEventType::MaskProposalReady; });
-    REQUIRE(proposal != maskEvents.end());
-    REQUIRE(proposal->maskProposal.has_value());
-    CHECK(proposal->maskProposal->suggestedFeatherPx == 12);
 
     std::ifstream log(diagnosticLog, std::ios::binary);
     std::ostringstream logText;

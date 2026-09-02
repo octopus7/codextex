@@ -137,9 +137,9 @@ again during the UV-space bake.
 ## Tests
 
 The test target covers OBJ validation and UV-overlap diagnostics, PNG RGBA
-round trips, mask/prompt parsing, an in-process WARP render/bake golden path,
+round trips, manual mask operations and prompt construction, an in-process WARP render/bake golden path,
 and a test-only JSONL App Server executable for signed-out, missing-skill,
-generation, concurrent per-tab job routing, structured-mask, and interrupt behavior. A real ImageGen E2E run
+generation, concurrent per-tab job routing, and interrupt behavior. A real ImageGen E2E run
 still requires a locally authenticated ChatGPT Codex installation.
 
 ## Scope

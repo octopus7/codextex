@@ -14,7 +14,6 @@ public:
     void Clear(bool selected = false);
     void PaintCircle(float x, float y, float radius, bool include);
     void ApplyLasso(std::span<const Vec2> pixelPoints, bool include);
-    void ApplyProposal(const MaskProposal& proposal);
     void RecomputeInwardFeather(int radiusPx);
 
     [[nodiscard]] std::uint32_t Width() const noexcept { return width_; }
