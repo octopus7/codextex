@@ -3,6 +3,7 @@
 #include <Windows.h>
 #include <nlohmann/json.hpp>
 
+#include <algorithm>
 #include <fstream>
 #include <system_error>
 
@@ -23,6 +24,16 @@ std::filesystem::path PathFromUtf8(const std::string& value) {
 
 bool HasRecentPrimaryAssetPair(const CodexRequestSettings& settings) noexcept {
     return !settings.recentObjPath.empty() && !settings.recentTexturePath.empty();
+}
+
+void AddImageGenPromptToHistory(CodexRequestSettings& settings,
+                                const std::string_view prompt) {
+    if (prompt.empty()) return;
+    constexpr std::size_t kMaximumEntries = 50;
+    auto& history = settings.imageGenPromptHistory;
+    std::erase(history, prompt);
+    history.insert(history.begin(), std::string(prompt));
+    if (history.size() > kMaximumEntries) history.resize(kMaximumEntries);
 }
 
 bool LoadCodexRequestSettings(const std::filesystem::path& path,
@@ -75,6 +86,17 @@ bool LoadCodexRequestSettings(const std::filesystem::path& path,
                 }
             }
         }
+        if (const auto imageGen = document.find("imageGen");
+            imageGen != document.end() && imageGen->is_object()) {
+            if (const auto history = imageGen->find("promptHistory");
+                history != imageGen->end() && history->is_array()) {
+                for (auto item = history->rbegin(); item != history->rend(); ++item) {
+                    if (item->is_string()) {
+                        AddImageGenPromptToHistory(settings, item->get<std::string>());
+                    }
+                }
+            }
+        }
         loadedFromDisk = true;
         return true;
     } catch (const std::exception& exception) {
@@ -108,6 +130,9 @@ bool SaveCodexRequestSettings(const std::filesystem::path& path,
                 {"obj", PathToUtf8(settings.recentObjPath)},
                 {"texture", PathToUtf8(settings.recentTexturePath)},
             };
+        }
+        if (!settings.imageGenPromptHistory.empty()) {
+            document["imageGen"]["promptHistory"] = settings.imageGenPromptHistory;
         }
         std::ofstream stream(temporary, std::ios::binary | std::ios::trunc);
         if (!stream) {

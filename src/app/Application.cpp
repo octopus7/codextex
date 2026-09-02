@@ -75,6 +75,33 @@ std::string FileSizeLabel(const std::uintmax_t bytes) {
     return stream.str();
 }
 
+std::string PromptExcerpt(const std::string_view prompt) {
+    constexpr std::size_t kMaximumCharacters = 48;
+    std::string excerpt;
+    const char* cursor = prompt.data();
+    const char* const end = prompt.data() + prompt.size();
+    std::size_t count = 0;
+    bool previousWasSpace = false;
+    while (cursor < end && count < kMaximumCharacters) {
+        unsigned int codepoint = 0;
+        const int length = ImTextCharFromUtf8(&codepoint, cursor, end);
+        if (length <= 0) break;
+        const bool whitespace = codepoint == ' ' || codepoint == '\t' ||
+                                codepoint == '\r' || codepoint == '\n';
+        if (whitespace) {
+            if (!previousWasSpace && !excerpt.empty()) excerpt.push_back(' ');
+        } else {
+            excerpt.append(cursor, static_cast<std::size_t>(length));
+        }
+        previousWasSpace = whitespace;
+        cursor += length;
+        ++count;
+    }
+    while (!excerpt.empty() && excerpt.back() == ' ') excerpt.pop_back();
+    if (cursor < end) excerpt += "...";
+    return excerpt;
+}
+
 bool IsInsideDirectory(const std::filesystem::path& root,
                        const std::filesystem::path& candidate) {
     std::error_code error;
@@ -958,8 +985,12 @@ void Application::DrawTools() {
     if (tab == nullptr) {
         ImGui::SeparatorText(Tr("Create projection tab"));
         ImGui::TextWrapped(Tr("Generate captures the cyan square immediately, then opens an independent locked painting tab. The main viewport remains usable."));
-        ImGui::InputTextMultiline(Tr("ImageGen prompt"), generationPrompt_.data(), generationPrompt_.size(),
-                                  ImVec2(-1, 90.0f * dpiScale_));
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextUnformatted(Tr("ImageGen prompt"));
+        ImGui::SameLine();
+        DrawPromptHistory();
+        ImGui::InputTextMultiline("##ImageGenPrompt", generationPrompt_.data(),
+                                  generationPrompt_.size(), ImVec2(-1, 90.0f * dpiScale_));
         const auto& models = codex_.Models();
         const CodexModelInfo* selectedModel = FindModel(models, codexSettings_.model);
         const std::string modelPreview = selectedModel
@@ -1102,6 +1133,59 @@ void Application::DrawTools() {
     const std::string localizedStatus = LocalizedMessage(status_);
     ImGui::TextColored(statusColor, "%s", localizedStatus.c_str());
     ImGui::End();
+}
+
+void Application::DrawPromptHistory() {
+    const bool hasHistory = !codexSettings_.imageGenPromptHistory.empty();
+    ImGui::BeginDisabled(!hasHistory);
+    if (ImGui::Button(Tr("History"))) {
+        selectedPromptHistoryIndex_.reset();
+        ImGui::OpenPopup("PromptHistoryPopup");
+    }
+    ImGui::EndDisabled();
+
+    ImGui::SetNextWindowSizeConstraints(ImVec2(360.0f * dpiScale_, 0.0f),
+                                        ImVec2(640.0f * dpiScale_, 420.0f * dpiScale_));
+    if (!ImGui::BeginPopup("PromptHistoryPopup")) return;
+
+    ImGui::TextUnformatted(Tr("Prompt history"));
+    ImGui::Separator();
+    std::optional<std::size_t> deleteIndex;
+    for (std::size_t index = 0; index < codexSettings_.imageGenPromptHistory.size(); ++index) {
+        ImGui::PushID(static_cast<int>(index));
+        const bool selected = selectedPromptHistoryIndex_ == index;
+        const float deleteWidth = selected
+            ? ImGui::CalcTextSize(Tr("Delete")).x + ImGui::GetStyle().FramePadding.x * 2.0f +
+                  ImGui::GetStyle().ItemSpacing.x
+            : 0.0f;
+        const std::string excerpt = PromptExcerpt(codexSettings_.imageGenPromptHistory[index]);
+        if (ImGui::Selectable(excerpt.c_str(), selected,
+                              ImGuiSelectableFlags_DontClosePopups,
+                              ImVec2(std::max(1.0f, ImGui::GetContentRegionAvail().x - deleteWidth),
+                                     0.0f))) {
+            generationPrompt_.fill('\0');
+            const std::string& prompt = codexSettings_.imageGenPromptHistory[index];
+            const std::size_t length = std::min(prompt.size(), generationPrompt_.size() - 1);
+            std::memcpy(generationPrompt_.data(), prompt.data(), length);
+            selectedPromptHistoryIndex_ = index;
+        }
+        if (ImGui::IsItemHovered()) {
+            ImGui::BeginTooltip();
+            ImGui::PushTextWrapPos(ImGui::GetFontSize() * 36.0f);
+            ImGui::TextUnformatted(codexSettings_.imageGenPromptHistory[index].c_str());
+            ImGui::PopTextWrapPos();
+            ImGui::EndTooltip();
+        }
+        if (selected) {
+            ImGui::SameLine();
+            if (ImGui::SmallButton(Tr("Delete"))) deleteIndex = index;
+        }
+        ImGui::PopID();
+    }
+    if (deleteIndex && DeletePromptHistoryEntry(*deleteIndex)) {
+        selectedPromptHistoryIndex_.reset();
+    }
+    ImGui::EndPopup();
 }
 
 void Application::DrawTexturePreview() {
@@ -1595,6 +1679,7 @@ bool Application::CreateProjectionTab(const bool generate) {
     pendingProjectionSelection_ = created.id;
     ActivateProjectionTab(created);
     if (generate) {
+        AddImageGenPromptToHistory(codexSettings_, generationPrompt_.data());
         created.generationStartedAt = std::chrono::steady_clock::now();
         created.status = "ImageGen request is starting.";
         if (!SaveCodexSettingsForRequest() ||
@@ -1610,6 +1695,25 @@ bool Application::CreateProjectionTab(const bool generate) {
         return false;
     }
     SetStatus("Projection workspace created; the main viewport remains available.");
+    return true;
+}
+
+bool Application::DeletePromptHistoryEntry(const std::size_t index) {
+    if (index >= codexSettings_.imageGenPromptHistory.size()) return false;
+    CodexRequestSettings settingsToSave = persistedSettings_;
+    settingsToSave.imageGenPromptHistory = codexSettings_.imageGenPromptHistory;
+    settingsToSave.imageGenPromptHistory.erase(
+        settingsToSave.imageGenPromptHistory.begin() + static_cast<std::ptrdiff_t>(index));
+    std::string error;
+    if (!SaveCodexRequestSettings(settingsPath_, settingsToSave, error)) {
+        settingsMessage_ = error;
+        SetStatus("Could not save prompt history.", true);
+        return false;
+    }
+    persistedSettings_ = settingsToSave;
+    codexSettings_.imageGenPromptHistory = settingsToSave.imageGenPromptHistory;
+    settingsLoadedFromDisk_ = true;
+    settingsMessage_.clear();
     return true;
 }
 

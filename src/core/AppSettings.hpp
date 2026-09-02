@@ -2,6 +2,8 @@
 
 #include <filesystem>
 #include <string>
+#include <string_view>
+#include <vector>
 
 namespace codextex {
 
@@ -15,10 +17,13 @@ struct CodexRequestSettings {
     // pair is neither persisted nor offered by the UI.
     std::filesystem::path recentObjPath;
     std::filesystem::path recentTexturePath;
+    std::vector<std::string> imageGenPromptHistory;
 };
 
 [[nodiscard]] bool HasRecentPrimaryAssetPair(
     const CodexRequestSettings& settings) noexcept;
+void AddImageGenPromptToHistory(CodexRequestSettings& settings,
+                                std::string_view prompt);
 
 bool LoadCodexRequestSettings(const std::filesystem::path& path,
                               CodexRequestSettings& settings,

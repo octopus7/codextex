@@ -36,6 +36,7 @@ TEST_CASE("App settings persist beside the requested binary path") {
     codextex::CodexRequestSettings written{"gpt-5.6-luna", "low", "ja"};
     written.recentObjPath = LR"(D:\素材\character.obj)";
     written.recentTexturePath = LR"(D:\素材\character.png)";
+    written.imageGenPromptHistory = {"은발 양갈래 메이드", "weathered brass armor"};
     std::string error;
     REQUIRE(codextex::SaveCodexRequestSettings(path, written, error));
 
@@ -49,6 +50,22 @@ TEST_CASE("App settings persist beside the requested binary path") {
     CHECK(loadedSettings.recentObjPath == written.recentObjPath);
     CHECK(loadedSettings.recentTexturePath == written.recentTexturePath);
     CHECK(codextex::HasRecentPrimaryAssetPair(loadedSettings));
+    CHECK(loadedSettings.imageGenPromptHistory == written.imageGenPromptHistory);
+}
+
+TEST_CASE("ImageGen prompt history is unique newest first and bounded") {
+    codextex::CodexRequestSettings settings;
+    codextex::AddImageGenPromptToHistory(settings, "first");
+    codextex::AddImageGenPromptToHistory(settings, "second");
+    codextex::AddImageGenPromptToHistory(settings, "first");
+    CHECK(settings.imageGenPromptHistory == std::vector<std::string>{"first", "second"});
+
+    for (int index = 0; index < 60; ++index) {
+        codextex::AddImageGenPromptToHistory(settings, "prompt-" + std::to_string(index));
+    }
+    REQUIRE(settings.imageGenPromptHistory.size() == 50);
+    CHECK(settings.imageGenPromptHistory.front() == "prompt-59");
+    CHECK(settings.imageGenPromptHistory.back() == "prompt-10");
 }
 
 TEST_CASE("Incomplete recent primary assets are not persisted") {

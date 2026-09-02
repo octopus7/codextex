@@ -38,6 +38,7 @@ private:
     void DrawMenuBar();
     void DrawViewport();
     void DrawTools();
+    void DrawPromptHistory();
     void DrawTexturePreview();
     void DrawSessionTemp();
     void HandleCodexEvents();
@@ -58,6 +59,7 @@ private:
     bool SaveTexture(bool choosePath);
     bool CreateProjectionTab(bool generate);
     bool SaveCodexSettingsForRequest();
+    bool DeletePromptHistoryEntry(std::size_t index);
     bool SelectUiLanguage(UiLanguage language);
     void ReloadUiFont();
     void NormalizeCodexSettings();
@@ -176,6 +178,7 @@ private:
     bool lassoActive_{};
     std::vector<Vec2> lassoPoints_;
     std::array<char, 2048> generationPrompt_{};
+    std::optional<std::size_t> selectedPromptHistoryIndex_;
     std::optional<std::uint64_t> activeProjectionId_;
     std::optional<std::uint64_t> pendingProjectionSelection_;
     std::optional<std::uint64_t> rendererProjectionId_;
