@@ -579,7 +579,8 @@ void Application::DrawMenuBar() {
 
 void Application::DrawViewport() {
     const std::string windowLabel = WindowLabel("3D Viewport", "3DViewportWindow");
-    ImGui::Begin(windowLabel.c_str());
+    ImGui::Begin(windowLabel.c_str(), nullptr,
+                 ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
     const auto drawLasso = [this](const ImVec2 topLeft) {
         if (!lassoActive_ || lassoPoints_.size() < 2) return;
         ImDrawList* draw = ImGui::GetWindowDrawList();
@@ -603,6 +604,7 @@ void Application::DrawViewport() {
             renderer_.RenderViewport(static_cast<std::uint32_t>(available.x),
                                      static_cast<std::uint32_t>(available.y), camera_);
             const ImVec2 topLeft = ImGui::GetCursorScreenPos();
+            const ImVec2 afterCanvas{topLeft.x, topLeft.y + available.y};
             ImGui::Image(reinterpret_cast<ImTextureID>(renderer_.ViewportTexture()),
                          ImVec2(available.x, available.y));
             bool viewportHovered = ImGui::IsItemHovered();
@@ -617,7 +619,6 @@ void Application::DrawViewport() {
                               color, Tr("ImageGen 1:1 crop"));
             }
 
-            const ImVec2 afterImage = ImGui::GetCursorScreenPos();
             const char* originalLabel = Tr("Original texture");
             const ImGuiStyle& style = ImGui::GetStyle();
             const float padding = 9.0f * dpiScale_;
@@ -642,7 +643,7 @@ void Application::DrawViewport() {
             const bool panelHovered = mouse.x >= panelMin.x && mouse.y >= panelMin.y &&
                 mouse.x <= panelMax.x && mouse.y <= panelMax.y;
             viewportHovered = viewportHovered && !panelHovered;
-            ImGui::SetCursorScreenPos(afterImage);
+            ImGui::SetCursorScreenPos(afterCanvas);
             HandleViewportInput({topLeft.x, topLeft.y}, available, nullptr, viewportHovered);
             drawLasso(topLeft);
             ImGui::EndTabItem();
@@ -672,6 +673,7 @@ void Application::DrawViewport() {
                     drawSize.y = drawSize.x / frozenAspect;
                 }
                 const ImVec2 regionTopLeft = ImGui::GetCursorScreenPos();
+                const ImVec2 afterCanvas{regionTopLeft.x, regionTopLeft.y + available.y};
                 const ImVec2 topLeft{regionTopLeft.x + (available.x - drawSize.x) * 0.5f,
                                      regionTopLeft.y + (available.y - drawSize.y) * 0.5f};
                 ImGui::SetCursorScreenPos(topLeft);
@@ -693,7 +695,6 @@ void Application::DrawViewport() {
                 ImGui::Image(reinterpret_cast<ImTextureID>(renderer_.ViewportTexture()),
                              ImVec2(drawSize.x, drawSize.y));
                 bool viewportHovered = ImGui::IsItemHovered();
-                const ImVec2 afterImage = ImGui::GetCursorScreenPos();
 
                 const char* workingLabel = Tr("Working");
                 const char* originalLabel = Tr("Original");
@@ -744,7 +745,7 @@ void Application::DrawViewport() {
                 }
                 viewportHovered = viewportHovered && !panelHovered &&
                     tab.viewMode == ProjectionViewMode::Working;
-                ImGui::SetCursorScreenPos(afterImage);
+                ImGui::SetCursorScreenPos(afterCanvas);
                 HandleViewportInput({topLeft.x, topLeft.y}, drawSize, &tab, viewportHovered);
                 drawLasso(topLeft);
                 const SquareCropFrame crop = CenteredSquare(drawSize);
