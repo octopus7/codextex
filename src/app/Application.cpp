@@ -480,6 +480,32 @@ void Application::DrawViewport() {
                 draw->AddRect(minimum, maximum, color, 0.0f, 0, 2.0f * dpiScale_);
                 draw->AddText(ImVec2(minimum.x + 6.0f * dpiScale_, minimum.y + 5.0f * dpiScale_),
                               color, "Locked projection crop");
+                const ImVec2 mouse = ImGui::GetIO().MousePos;
+                const Vec2 localMouse{mouse.x - topLeft.x, mouse.y - topLeft.y};
+                const bool brushAvailable = tab.projectionLoaded && !tab.applied &&
+                    !codex_.IsBusy(tab.id) && !useLasso_ &&
+                    tab.mask.Width() != 0 && tab.mask.Height() != 0;
+                if (brushAvailable && ImGui::IsItemHovered() && crop.Contains(localMouse)) {
+                    const bool erasing = ImGui::IsMouseDown(ImGuiMouseButton_Right);
+                    const ImU32 brushColor = erasing
+                        ? IM_COL32(255, 85, 85, 235)
+                        : IM_COL32(70, 220, 255, 235);
+                    draw->PushClipRect(minimum, maximum, true);
+                    draw->AddCircleFilled(mouse, tab.brushRadius,
+                                          erasing ? IM_COL32(255, 70, 70, 35)
+                                                  : IM_COL32(70, 220, 255, 35),
+                                          48);
+                    draw->AddCircle(mouse, tab.brushRadius, IM_COL32(0, 0, 0, 230),
+                                    48, 4.0f * dpiScale_);
+                    draw->AddCircle(mouse, tab.brushRadius, brushColor,
+                                    48, 2.0f * dpiScale_);
+                    const float cross = 4.0f * dpiScale_;
+                    draw->AddLine({mouse.x - cross, mouse.y}, {mouse.x + cross, mouse.y},
+                                  brushColor, 1.5f * dpiScale_);
+                    draw->AddLine({mouse.x, mouse.y - cross}, {mouse.x, mouse.y + cross},
+                                  brushColor, 1.5f * dpiScale_);
+                    draw->PopClipRect();
+                }
                 ImGui::EndTabItem();
             }
             if (!open) closeTab = tab.id;
