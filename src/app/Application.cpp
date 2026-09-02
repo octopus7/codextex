@@ -658,10 +658,12 @@ void Application::DrawViewport() {
             overlay->AddRect(panelMin, panelMax, IM_COL32(105, 125, 145, 210),
                              9.0f * dpiScale_, 0, 1.0f * dpiScale_);
             ImGui::SetCursorScreenPos({panelMin.x + padding, panelMin.y + padding});
+            ImGui::BeginGroup();
             if (ImGui::RadioButton(workingLabel, !mainOriginalTexturePreview_))
                 mainOriginalTexturePreview_ = false;
             if (ImGui::RadioButton(originalLabel, mainOriginalTexturePreview_))
                 mainOriginalTexturePreview_ = true;
+            ImGui::EndGroup();
             renderer_.SetOriginalTexturePreview(mainOriginalTexturePreview_);
             const ImVec2 mouse = ImGui::GetIO().MousePos;
             const bool panelHovered = mouse.x >= panelMin.x && mouse.y >= panelMin.y &&
@@ -760,6 +762,7 @@ void Application::DrawViewport() {
                 overlay->AddRect(panelMin, panelMax, IM_COL32(105, 125, 145, 210),
                                  9.0f * dpiScale_, 0, 1.0f * dpiScale_);
                 ImGui::SetCursorScreenPos({panelMin.x + padding, panelMin.y + padding});
+                ImGui::BeginGroup();
                 int selectedMode = static_cast<int>(tab.viewMode);
                 if (ImGui::RadioButton(workingLabel.c_str(), selectedMode ==
                                       static_cast<int>(ProjectionViewMode::Working))) {
@@ -775,6 +778,7 @@ void Application::DrawViewport() {
                                       static_cast<int>(ProjectionViewMode::Original))) {
                     tab.viewMode = ProjectionViewMode::Original;
                 }
+                ImGui::EndGroup();
                 const ImVec2 mouse = ImGui::GetIO().MousePos;
                 const bool panelHovered = mouse.x >= panelMin.x && mouse.y >= panelMin.y &&
                     mouse.x <= panelMax.x && mouse.y <= panelMax.y;
