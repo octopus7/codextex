@@ -18,6 +18,7 @@ find_package(tinyobjloader CONFIG REQUIRED)
 
 add_library(codextex_core
   src/core/AppSettings.cpp
+  src/core/GenerationArchive.cpp
   src/core/Localization.cpp
   src/core/Mesh.cpp
   src/core/TextureImage.cpp
@@ -71,6 +72,7 @@ if(CODEXTEX_BUILD_TESTS)
     src/codex/CodexBridge.cpp
     src/graphics/Renderer.cpp
     tests/AppSettingsTests.cpp
+    tests/GenerationArchiveTests.cpp
     tests/CodexBridgeTests.cpp
     tests/MeshTests.cpp
     tests/MaskTests.cpp

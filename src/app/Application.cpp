@@ -1,10 +1,12 @@
 #include "app/Application.hpp"
+#include "core/GenerationArchive.hpp"
 
 #include <imgui.h>
 #include <imgui_internal.h>
 #include <imgui_impl_dx11.h>
 #include <imgui_impl_win32.h>
 #include <commdlg.h>
+#include <ShlObj.h>
 
 #include <algorithm>
 #include <chrono>
@@ -50,6 +52,18 @@ std::filesystem::path ExecutableDirectory() {
                                             static_cast<DWORD>(path.size()));
     if (length == 0 || length >= path.size()) return {};
     return std::filesystem::path(path.data()).parent_path();
+}
+
+std::filesystem::path GenerationArchiveDirectory() {
+    PWSTR localAppData = nullptr;
+    if (FAILED(SHGetKnownFolderPath(FOLDERID_LocalAppData, KF_FLAG_CREATE,
+                                    nullptr, &localAppData)) || localAppData == nullptr) {
+        return {};
+    }
+    const std::filesystem::path result =
+        std::filesystem::path(localAppData) / L"CodexTex" / L"Generations";
+    CoTaskMemFree(localAppData);
+    return result;
 }
 
 std::string ElapsedLabel(const std::chrono::steady_clock::time_point startedAt,
@@ -114,13 +128,6 @@ bool IsInsideDirectory(const std::filesystem::path& root,
     if (relative.empty() || relative.is_absolute()) return false;
     const auto first = relative.begin();
     return first != relative.end() && *first != L"..";
-}
-
-bool SameAspect(const TextureImage& lhs, const TextureImage& rhs) {
-    if (lhs.Empty() || rhs.Empty()) return false;
-    const double left = static_cast<double>(lhs.Width()) / lhs.Height();
-    const double right = static_cast<double>(rhs.Width()) / rhs.Height();
-    return std::abs(left - right) < 0.005;
 }
 
 struct SquareCropFrame {
@@ -339,6 +346,7 @@ bool Application::Initialize(HINSTANCE instance, const int showCommand, std::str
     imageGenLogPath_ = executableDirectory.empty()
         ? std::filesystem::path{}
         : executableDirectory / L"CodexTex-ImageGen.log";
+    generationArchiveDirectory_ = GenerationArchiveDirectory();
     const bool diagnosticLogReady = !imageGenLogPath_.empty() &&
         codex_.EnableDiagnosticLog(imageGenLogPath_);
     codex_.Start(sessionDirectory_);
@@ -1375,7 +1383,8 @@ void Application::DeleteTempFile(const std::filesystem::path& path) {
                     MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2) != IDYES) return;
     for (const auto id : affectedTabs) CloseProjectionTab(id);
     std::error_code error;
-    const bool removed = std::filesystem::remove(path, error);
+    const bool removed = !std::filesystem::exists(path, error) ||
+                         std::filesystem::remove(path, error);
     if (error || !removed) {
         SetStatus("Could not delete the selected temporary file.", true);
         return;
@@ -1574,9 +1583,7 @@ bool Application::OpenProjection(ProjectionTab& tab) {
         SetStatus(error, true);
         return false;
     }
-    TextureImage capture;
-    if (!capture.LoadPng(tab.capturePath, error) || !SameAspect(capture, image) ||
-        image.Width() != image.Height()) {
+    if (image.Width() != image.Height()) {
         SetStatus("Projection PNG must be square to match the ImageGen crop.", true);
         return false;
     }
@@ -1593,6 +1600,7 @@ bool Application::OpenProjection(ProjectionTab& tab) {
     if (activeProjectionId_ == tab.id) {
         renderer_.SetProjectionPreviewMode(ProjectionPreviewMode::Masked);
     }
+    CleanupProjectionTemp(tab);
     return true;
 }
 
@@ -1676,17 +1684,32 @@ bool Application::CreateProjectionTab(const bool generate) {
                                      renderer_.ViewportHeight());
     tab.hiddenFaces = hiddenFaces_;
     tab.referenceAssetsVisible = referenceAssetsVisible_;
+    tab.captureShadingEnabled = shadingEnabled_;
+    tab.captureBackgroundColor = viewportBackgroundColor_;
+    tab.prompt = generationPrompt_.data();
+    tab.referencePaths.reserve(referenceAssets_.size());
+    for (const auto& reference : referenceAssets_) {
+        tab.referencePaths.emplace_back(reference.objPath, reference.texturePath);
+    }
     tab.baseTextureRevision = textureRevision_;
     tab.model = codexSettings_.model;
     tab.reasoningEffort = codexSettings_.reasoningEffort;
-    tab.capturePath = sessionDirectory_ /
-        (L"capture-" + std::to_wstring(tab.id) + L".png");
+    tab.temporaryDirectory = sessionDirectory_ /
+        (L"projection-" + std::to_wstring(tab.id));
+    std::error_code directoryError;
+    std::filesystem::create_directories(tab.temporaryDirectory, directoryError);
+    if (directoryError) {
+        SetStatus("Could not create a temporary projection directory.", true);
+        return false;
+    }
+    tab.capturePath = tab.temporaryDirectory / L"capture.png";
     TextureImage capture;
     std::string error;
     if (!renderer_.CaptureFrame(tab.camera, kOfflineCaptureSize, kOfflineCaptureSize,
                                 capture, tab.frame, error) ||
         !capture.SavePng(tab.capturePath, error)) {
         SetStatus(error, true);
+        CleanupProjectionTemp(tab);
         ActivateMainViewport();
         return false;
     }
@@ -1707,6 +1730,7 @@ bool Application::CreateProjectionTab(const bool generate) {
             created.generationStartedAt.reset();
             created.status = "Could not start ImageGen; an external PNG can still be loaded.";
             created.statusIsError = true;
+            CleanupProjectionTemp(created);
         }
     } else if (!OpenProjection(created)) {
         CloseProjectionTab(created.id);
@@ -1817,6 +1841,7 @@ void Application::CloseProjectionTab(const std::uint64_t id) {
     const auto found = std::ranges::find(projectionTabs_, id, &ProjectionTab::id);
     if (found == projectionTabs_.end()) return;
     const bool wasActive = activeProjectionId_ == id;
+    CleanupProjectionTemp(*found);
     projectionTabs_.erase(found);
     if (wasActive) {
         activeProjectionId_.reset();
@@ -1830,9 +1855,10 @@ void Application::CloseProjectionTab(const std::uint64_t id) {
 }
 
 void Application::ClearProjectionTabs() {
-    for (const auto& tab : projectionTabs_) {
+    for (auto& tab : projectionTabs_) {
         codex_.Cancel(tab.id);
         codex_.Forget(tab.id);
+        CleanupProjectionTemp(tab);
     }
     projectionTabs_.clear();
     activeProjectionId_.reset();
@@ -1964,6 +1990,23 @@ void Application::RedoTexture() {
     }
 }
 
+void Application::CleanupProjectionTemp(ProjectionTab& tab) {
+    if (tab.temporaryDirectory.empty()) return;
+    if (!IsInsideDirectory(sessionDirectory_, tab.temporaryDirectory)) {
+        SetStatus("Refused to clean a projection path outside the managed session folder.", true);
+        return;
+    }
+    std::error_code error;
+    std::filesystem::remove_all(tab.temporaryDirectory, error);
+    if (error) {
+        SetStatus("Could not clean the completed projection temporary files.", true);
+        return;
+    }
+    tab.capturePath.clear();
+    tab.temporaryDirectory.clear();
+    tempFilesDirty_ = true;
+}
+
 void Application::HandleCodexEvents() {
     for (CodexEvent& event : codex_.PollEvents()) {
         ProjectionTab* tab = FindProjectionTab(event.jobId);
@@ -1974,35 +2017,79 @@ void Application::HandleCodexEvents() {
         if (event.type == CodexEventType::GeneratedImage) {
             tempFilesDirty_ = true;
             TextureImage image;
-            TextureImage capture;
             std::string error;
-            if (!image.LoadPng(event.imagePath, error) || !capture.LoadPng(tab->capturePath, error) ||
-                !SameAspect(capture, image) || image.Width() != image.Height()) {
+            if (!image.LoadPng(event.imagePath, error) || image.Width() != image.Height()) {
                 tab->status = error.empty()
                     ? "ImageGen result must be square to match the captured crop." : error;
                 tab->statusIsError = true;
                 continue;
             }
-            if (activeProjectionId_ == tab->id && !renderer_.SetProjectionImage(image, error)) {
-                tab->status = error;
+
+            GenerationArchiveMetadata metadata;
+            metadata.jobId = tab->id;
+            metadata.prompt = tab->prompt;
+            metadata.model = tab->model;
+            metadata.reasoningEffort = tab->reasoningEffort;
+            metadata.objPath = mesh_.SourcePath();
+            metadata.texturePath = texturePath_;
+            metadata.cameraTarget = tab->camera.target;
+            metadata.cameraYaw = tab->camera.yaw;
+            metadata.cameraPitch = tab->camera.pitch;
+            metadata.cameraDistance = tab->camera.distance;
+            metadata.cameraFovDegrees = tab->camera.fovDegrees;
+            metadata.captureWidth = tab->frame.width;
+            metadata.captureHeight = tab->frame.height;
+            metadata.cropX = tab->frame.cropX;
+            metadata.cropY = tab->frame.cropY;
+            metadata.cropSize = tab->frame.cropSize;
+            for (std::size_t triangle = 0; triangle < tab->hiddenFaces.size(); ++triangle) {
+                if (tab->hiddenFaces[triangle] != 0) {
+                    metadata.hiddenTriangles.push_back(static_cast<std::uint32_t>(triangle));
+                }
+            }
+            metadata.referenceAssetsVisible = tab->referenceAssetsVisible;
+            metadata.shadingEnabled = tab->captureShadingEnabled;
+            metadata.backgroundColor = tab->captureBackgroundColor;
+            for (const auto& [objPath, texturePath] : tab->referencePaths) {
+                metadata.references.push_back({objPath, texturePath});
+            }
+            GenerationArchivePaths archive;
+            if (!SaveGenerationArchive(generationArchiveDirectory_, event.imagePath,
+                                       metadata, archive, error)) {
+                tab->temporaryCleanupBlocked = true;
+                tab->status = "Could not archive the generated image; temporary files were kept. " +
+                              error;
                 tab->statusIsError = true;
                 continue;
             }
+            tab->projectionPath = archive.image;
+            tab->metadataPath = archive.metadata;
+            if (activeProjectionId_ == tab->id && !renderer_.SetProjectionImage(image, error)) {
+                tab->status = error;
+                tab->statusIsError = true;
+                CleanupProjectionTemp(*tab);
+                continue;
+            }
             tab->projectionImage = std::move(image);
-            tab->projectionPath = event.imagePath;
             tab->projectionLoaded = true;
-            tab->status = "ImageGen result loaded; refine the mask before baking.";
+            tab->status = "ImageGen result archived; refine the mask before baking.";
             tab->statusIsError = false;
             if (activeProjectionId_ == tab->id) {
                 renderer_.SetProjectionPreviewMode(ProjectionPreviewMode::Masked);
             }
+            CleanupProjectionTemp(*tab);
         } else {
             tab->status = event.message;
             tab->statusIsError = event.type == CodexEventType::Error;
         }
     }
     for (auto& tab : projectionTabs_) {
-        if (!codex_.IsBusy(tab.id)) tab.generationStartedAt.reset();
+        if (!codex_.IsBusy(tab.id) && tab.generationStartedAt) {
+            tab.generationStartedAt.reset();
+            if (!tab.projectionLoaded && !tab.temporaryCleanupBlocked) {
+                CleanupProjectionTemp(tab);
+            }
+        }
     }
 }
 

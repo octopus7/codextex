@@ -60,6 +60,7 @@ private:
     bool CreateProjectionTab(bool generate);
     bool SaveCodexSettingsForRequest();
     bool DeletePromptHistoryEntry(std::size_t index);
+    void CleanupProjectionTemp(ProjectionTab& tab);
     bool SelectUiLanguage(UiLanguage language);
     void ReloadUiFont();
     void NormalizeCodexSettings();
@@ -116,13 +117,20 @@ private:
         TextureImage projectionImage;
         MaskImage mask;
         std::filesystem::path capturePath;
+        std::filesystem::path temporaryDirectory;
         std::filesystem::path projectionPath;
+        std::filesystem::path metadataPath;
+        std::string prompt;
         std::string status = "Waiting for projection image.";
         std::string model;
         std::string reasoningEffort;
         bool statusIsError{};
         bool projectionLoaded{};
         bool referenceAssetsVisible{true};
+        bool captureShadingEnabled{};
+        bool temporaryCleanupBlocked{};
+        std::array<float, 3> captureBackgroundColor{};
+        std::vector<std::pair<std::filesystem::path, std::filesystem::path>> referencePaths;
         bool applied{};
         ProjectionViewMode viewMode{ProjectionViewMode::Working};
         float brushRadius{28.0f};
@@ -147,6 +155,7 @@ private:
     std::filesystem::path sessionDirectory_;
     std::filesystem::path texturePath_;
     std::filesystem::path imageGenLogPath_;
+    std::filesystem::path generationArchiveDirectory_;
     std::filesystem::path settingsPath_;
     CodexRequestSettings codexSettings_;
     CodexRequestSettings persistedSettings_;

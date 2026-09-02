@@ -151,6 +151,7 @@ constexpr std::array kTranslations{
     Translation{"Texture change redone.", "テクスチャ変更をやり直しました。", "텍스처 변경을 다시 실행했습니다."},
     Translation{"ImageGen result must be square to match the captured crop.", "ImageGen結果はキャプチャクロップに合わせた正方形である必要があります。", "ImageGen 결과는 캡처 크롭에 맞는 정사각형이어야 합니다."},
     Translation{"ImageGen result loaded; refine the mask before baking.", "ImageGen結果を読み込みました。ベイク前にマスクを調整してください。", "ImageGen 결과를 불러왔습니다. 베이크 전에 마스크를 다듬으세요."},
+    Translation{"ImageGen result archived; refine the mask before baking.", "ImageGen結果を永続保存しました。ベイク前にマスクを調整してください。", "ImageGen 결과를 영구 저장했습니다. 베이크 전에 마스크를 다듬으세요."},
     Translation{"Could not read this file.", "このファイルを読み込めませんでした。", "이 파일을 읽을 수 없습니다."},
     Translation{"Showing the first 64 KiB.", "先頭64 KiBを表示しています。", "처음 64 KiB를 표시합니다."},
     Translation{"Text/binary preview.", "テキスト/バイナリプレビュー。", "텍스트/바이너리 미리보기입니다."},

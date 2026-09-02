@@ -745,10 +745,19 @@ std::filesystem::path CodexBridge::CopyGeneratedImage(const std::uint64_t jobId,
         PushEvent(std::move(event));
         return {};
     }
-    const auto destination = sessionDirectory_ /
-        (L"imagegen-" + std::to_wstring(jobId) + L"-" +
-         std::to_wstring(++generatedIndex_) + L".png");
+    const auto jobDirectory = sessionDirectory_ /
+        (L"projection-" + std::to_wstring(jobId));
     std::error_code error;
+    std::filesystem::create_directories(jobDirectory, error);
+    if (error) {
+        CodexEvent event{CodexEventType::Error,
+                         "Could not create the temporary directory for this projection."};
+        event.jobId = jobId;
+        PushEvent(std::move(event));
+        return {};
+    }
+    const auto destination = jobDirectory /
+        (L"imagegen-" + std::to_wstring(++generatedIndex_) + L".png");
     std::filesystem::copy_file(source, destination, std::filesystem::copy_options::none, error);
     if (error) {
         CodexEvent event{CodexEventType::Error,

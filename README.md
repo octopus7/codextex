@@ -115,9 +115,11 @@ sides still sample shared texels, the resulting texture necessarily appears on
 both sides; separate left/right detail requires non-overlapping UV islands.
 
 Generated images are first produced by Codex's built-in ImageGen at its normal
-Codex-managed location. CodexTex consumes `imageGeneration.savedPath` and
-copies the selected image into its per-process session directory. That session
-directory is removed on clean shutdown.
+Codex-managed location. CodexTex consumes `imageGeneration.savedPath`, then archives
+the PNG under `%LocalAppData%/CodexTex/Generations` together with JSON metadata for
+the prompt, model, camera, frozen capture, hidden faces, and reference assets.
+Each projection job uses an isolated temporary subdirectory which is removed as
+soon as its permanent image and metadata are safely finalized.
 
 The `Session Temp` panel lists files currently stored in that directory. PNG
 captures and generated images can be previewed directly; other files expose a
