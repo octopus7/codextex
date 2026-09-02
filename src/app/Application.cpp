@@ -1175,6 +1175,8 @@ void Application::DrawPromptHistory() {
 
     ImGui::TextUnformatted(Tr("Prompt history"));
     ImGui::Separator();
+    const auto nowUnixSeconds = std::chrono::duration_cast<std::chrono::seconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count();
     std::optional<std::size_t> deleteIndex;
     for (std::size_t index = 0; index < codexSettings_.imageGenPromptHistory.size(); ++index) {
         ImGui::PushID(static_cast<int>(index));
@@ -1183,13 +1185,16 @@ void Application::DrawPromptHistory() {
             ? ImGui::CalcTextSize(Tr("Delete")).x + ImGui::GetStyle().FramePadding.x * 2.0f +
                   ImGui::GetStyle().ItemSpacing.x
             : 0.0f;
-        const std::string excerpt = PromptExcerpt(codexSettings_.imageGenPromptHistory[index]);
-        if (ImGui::Selectable(excerpt.c_str(), selected,
+        const ImageGenPromptHistoryEntry& entry = codexSettings_.imageGenPromptHistory[index];
+        const std::string label = FormatPromptHistoryAge(entry.lastUsedUnixSeconds,
+                                                          nowUnixSeconds) + "  " +
+            PromptExcerpt(entry.prompt);
+        if (ImGui::Selectable(label.c_str(), selected,
                               ImGuiSelectableFlags_DontClosePopups,
                               ImVec2(std::max(1.0f, ImGui::GetContentRegionAvail().x - deleteWidth),
                                      0.0f))) {
             generationPrompt_.fill('\0');
-            const std::string& prompt = codexSettings_.imageGenPromptHistory[index];
+            const std::string& prompt = entry.prompt;
             const std::size_t length = std::min(prompt.size(), generationPrompt_.size() - 1);
             std::memcpy(generationPrompt_.data(), prompt.data(), length);
             selectedPromptHistoryIndex_ = index;
@@ -1197,7 +1202,7 @@ void Application::DrawPromptHistory() {
         if (ImGui::IsItemHovered()) {
             ImGui::BeginTooltip();
             ImGui::PushTextWrapPos(ImGui::GetFontSize() * 36.0f);
-            ImGui::TextUnformatted(codexSettings_.imageGenPromptHistory[index].c_str());
+            ImGui::TextUnformatted(entry.prompt.c_str());
             ImGui::PopTextWrapPos();
             ImGui::EndTooltip();
         }
@@ -1721,6 +1726,7 @@ bool Application::CreateProjectionTab(const bool generate) {
     ActivateProjectionTab(created);
     if (generate) {
         AddImageGenPromptToHistory(codexSettings_, generationPrompt_.data());
+        selectedPromptHistoryIndex_.reset();
         created.generationStartedAt = std::chrono::steady_clock::now();
         created.status = "ImageGen request is starting.";
         if (!SaveCodexSettingsForRequest() ||

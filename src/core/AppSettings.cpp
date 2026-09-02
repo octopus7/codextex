@@ -4,6 +4,7 @@
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
+#include <chrono>
 #include <fstream>
 #include <system_error>
 
@@ -28,12 +29,40 @@ bool HasRecentPrimaryAssetPair(const CodexRequestSettings& settings) noexcept {
 
 void AddImageGenPromptToHistory(CodexRequestSettings& settings,
                                 const std::string_view prompt) {
+    const auto now = std::chrono::duration_cast<std::chrono::seconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count();
+    AddImageGenPromptToHistory(settings, prompt, now);
+}
+
+void AddImageGenPromptToHistory(CodexRequestSettings& settings,
+                                const std::string_view prompt,
+                                const std::int64_t usedAtUnixSeconds) {
     if (prompt.empty()) return;
     constexpr std::size_t kMaximumEntries = 50;
     auto& history = settings.imageGenPromptHistory;
-    std::erase(history, prompt);
-    history.insert(history.begin(), std::string(prompt));
+    std::erase_if(history, [prompt](const ImageGenPromptHistoryEntry& entry) {
+        return entry.prompt == prompt;
+    });
+    history.insert(history.begin(), {std::string(prompt), usedAtUnixSeconds});
     if (history.size() > kMaximumEntries) history.resize(kMaximumEntries);
+}
+
+std::string FormatPromptHistoryAge(const std::int64_t lastUsedUnixSeconds,
+                                   const std::int64_t nowUnixSeconds) {
+    const std::int64_t elapsed = std::max<std::int64_t>(0, nowUnixSeconds - lastUsedUnixSeconds);
+    constexpr std::int64_t minute = 60;
+    constexpr std::int64_t hour = 60 * minute;
+    constexpr std::int64_t day = 24 * hour;
+    constexpr std::int64_t week = 7 * day;
+    constexpr std::int64_t month = 30 * day;
+    constexpr std::int64_t year = 365 * day;
+    if (elapsed < minute) return "now";
+    if (elapsed < hour) return std::to_string(elapsed / minute) + "m";
+    if (elapsed < day) return std::to_string(elapsed / hour) + "h";
+    if (elapsed < week) return std::to_string(elapsed / day) + "d";
+    if (elapsed < month) return std::to_string(elapsed / week) + "w";
+    if (elapsed < year) return std::to_string(elapsed / month) + "mo";
+    return std::to_string(elapsed / year) + "y";
 }
 
 bool LoadCodexRequestSettings(const std::filesystem::path& path,
@@ -90,9 +119,19 @@ bool LoadCodexRequestSettings(const std::filesystem::path& path,
             imageGen != document.end() && imageGen->is_object()) {
             if (const auto history = imageGen->find("promptHistory");
                 history != imageGen->end() && history->is_array()) {
+                const auto loadedAt = std::chrono::duration_cast<std::chrono::seconds>(
+                    std::chrono::system_clock::now().time_since_epoch()).count();
                 for (auto item = history->rbegin(); item != history->rend(); ++item) {
                     if (item->is_string()) {
-                        AddImageGenPromptToHistory(settings, item->get<std::string>());
+                        AddImageGenPromptToHistory(settings, item->get<std::string>(), loadedAt);
+                    } else if (item->is_object()) {
+                        const auto prompt = item->find("prompt");
+                        const auto lastUsed = item->find("lastUsedUnixSeconds");
+                        if (prompt != item->end() && prompt->is_string() &&
+                            lastUsed != item->end() && lastUsed->is_number_integer()) {
+                            AddImageGenPromptToHistory(settings, prompt->get<std::string>(),
+                                                       lastUsed->get<std::int64_t>());
+                        }
                     }
                 }
             }
@@ -132,7 +171,14 @@ bool SaveCodexRequestSettings(const std::filesystem::path& path,
             };
         }
         if (!settings.imageGenPromptHistory.empty()) {
-            document["imageGen"]["promptHistory"] = settings.imageGenPromptHistory;
+            auto& promptHistory = document["imageGen"]["promptHistory"];
+            promptHistory = nlohmann::json::array();
+            for (const auto& entry : settings.imageGenPromptHistory) {
+                promptHistory.push_back({
+                    {"prompt", entry.prompt},
+                    {"lastUsedUnixSeconds", entry.lastUsedUnixSeconds},
+                });
+            }
         }
         std::ofstream stream(temporary, std::ios::binary | std::ios::trunc);
         if (!stream) {

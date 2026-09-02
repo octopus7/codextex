@@ -5,6 +5,7 @@
 
 #include <filesystem>
 #include <fstream>
+#include <nlohmann/json.hpp>
 
 namespace {
 
@@ -36,7 +37,10 @@ TEST_CASE("App settings persist beside the requested binary path") {
     codextex::CodexRequestSettings written{"gpt-5.6-luna", "low", "ja"};
     written.recentObjPath = LR"(D:\素材\character.obj)";
     written.recentTexturePath = LR"(D:\素材\character.png)";
-    written.imageGenPromptHistory = {"은발 양갈래 메이드", "weathered brass armor"};
+    written.imageGenPromptHistory = {
+        {"은발 양갈래 메이드", 1'725'000'000},
+        {"weathered brass armor", 1'724'000'000},
+    };
     std::string error;
     REQUIRE(codextex::SaveCodexRequestSettings(path, written, error));
 
@@ -55,17 +59,62 @@ TEST_CASE("App settings persist beside the requested binary path") {
 
 TEST_CASE("ImageGen prompt history is unique newest first and bounded") {
     codextex::CodexRequestSettings settings;
-    codextex::AddImageGenPromptToHistory(settings, "first");
-    codextex::AddImageGenPromptToHistory(settings, "second");
-    codextex::AddImageGenPromptToHistory(settings, "first");
-    CHECK(settings.imageGenPromptHistory == std::vector<std::string>{"first", "second"});
+    codextex::AddImageGenPromptToHistory(settings, "first", 100);
+    codextex::AddImageGenPromptToHistory(settings, "second", 200);
+    codextex::AddImageGenPromptToHistory(settings, "first", 300);
+    REQUIRE(settings.imageGenPromptHistory.size() == 2);
+    CHECK(settings.imageGenPromptHistory[0] ==
+          codextex::ImageGenPromptHistoryEntry{"first", 300});
+    CHECK(settings.imageGenPromptHistory[1] ==
+          codextex::ImageGenPromptHistoryEntry{"second", 200});
 
     for (int index = 0; index < 60; ++index) {
-        codextex::AddImageGenPromptToHistory(settings, "prompt-" + std::to_string(index));
+        codextex::AddImageGenPromptToHistory(settings, "prompt-" + std::to_string(index),
+                                             1'000 + index);
     }
     REQUIRE(settings.imageGenPromptHistory.size() == 50);
-    CHECK(settings.imageGenPromptHistory.front() == "prompt-59");
-    CHECK(settings.imageGenPromptHistory.back() == "prompt-10");
+    CHECK(settings.imageGenPromptHistory.front().prompt == "prompt-59");
+    CHECK(settings.imageGenPromptHistory.front().lastUsedUnixSeconds == 1'059);
+    CHECK(settings.imageGenPromptHistory.back().prompt == "prompt-10");
+}
+
+TEST_CASE("Prompt history formats compact Twitter-style elapsed time") {
+    constexpr std::int64_t now = 2'000'000'000;
+    CHECK(codextex::FormatPromptHistoryAge(now, now) == "now");
+    CHECK(codextex::FormatPromptHistoryAge(now - 59, now) == "now");
+    CHECK(codextex::FormatPromptHistoryAge(now - 60, now) == "1m");
+    CHECK(codextex::FormatPromptHistoryAge(now - 3 * 60 * 60, now) == "3h");
+    CHECK(codextex::FormatPromptHistoryAge(now - 24 * 60 * 60, now) == "1d");
+    CHECK(codextex::FormatPromptHistoryAge(now - 14 * 24 * 60 * 60, now) == "2w");
+    CHECK(codextex::FormatPromptHistoryAge(now - 60 * 24 * 60 * 60, now) == "2mo");
+    CHECK(codextex::FormatPromptHistoryAge(now - 730LL * 24 * 60 * 60, now) == "2y");
+    CHECK(codextex::FormatPromptHistoryAge(now + 60, now) == "now");
+}
+
+TEST_CASE("Legacy string prompt history loads and upgrades to timestamped entries") {
+    const auto legacyPath = SettingsPath(L"settings-legacy-prompt-history");
+    std::filesystem::create_directories(legacyPath.parent_path());
+    {
+        std::ofstream stream(legacyPath, std::ios::binary | std::ios::trunc);
+        stream << R"({"codex":{"model":"gpt-5.6-sol","reasoningEffort":"medium"},"imageGen":{"promptHistory":["newest","older"]}})";
+    }
+    std::string error;
+    codextex::CodexRequestSettings settings;
+    bool loaded = false;
+    REQUIRE(codextex::LoadCodexRequestSettings(legacyPath, settings, loaded, error));
+    REQUIRE(loaded);
+    REQUIRE(settings.imageGenPromptHistory.size() == 2);
+    CHECK(settings.imageGenPromptHistory[0].prompt == "newest");
+    CHECK(settings.imageGenPromptHistory[1].prompt == "older");
+    CHECK(settings.imageGenPromptHistory[0].lastUsedUnixSeconds > 0);
+
+    const auto upgradedPath = SettingsPath(L"settings-upgraded-prompt-history");
+    REQUIRE(codextex::SaveCodexRequestSettings(upgradedPath, settings, error));
+    std::ifstream upgradedStream(upgradedPath, std::ios::binary);
+    const nlohmann::json upgraded = nlohmann::json::parse(upgradedStream);
+    REQUIRE(upgraded["imageGen"]["promptHistory"][0].is_object());
+    CHECK(upgraded["imageGen"]["promptHistory"][0]["prompt"] == "newest");
+    CHECK(upgraded["imageGen"]["promptHistory"][0]["lastUsedUnixSeconds"].is_number_integer());
 }
 
 TEST_CASE("Incomplete recent primary assets are not persisted") {
