@@ -213,6 +213,37 @@ void SectionHeaderWithHelp(const char* id, const char* title, const char* help) 
     HelpIcon(id, help);
 }
 
+bool ShortcutModeRadio(const char* id, const char* shortcut, const char* label,
+                       const bool selected, const bool enabled, const float dpiScale) {
+    ImGui::PushID(id);
+    ImGui::BeginDisabled(!enabled);
+    bool activated = ImGui::RadioButton("##Mode", selected);
+    ImGui::SameLine(0.0f, ImGui::GetStyle().ItemInnerSpacing.x);
+
+    const float badgeSide = ImGui::GetFrameHeight() * 0.78f;
+    ImVec2 badgeMin = ImGui::GetCursorScreenPos();
+    badgeMin.y += (ImGui::GetFrameHeight() - badgeSide) * 0.5f;
+    ImGui::SetCursorScreenPos(badgeMin);
+    ImGui::InvisibleButton("##Shortcut", {badgeSide, badgeSide});
+    activated = activated || ImGui::IsItemClicked();
+    const ImVec2 badgeMax{badgeMin.x + badgeSide, badgeMin.y + badgeSide};
+    ImDrawList* draw = ImGui::GetWindowDrawList();
+    const int badgeAlpha = enabled ? 255 : 115;
+    draw->AddRectFilled(badgeMin, badgeMax, IM_COL32(255, 255, 255, badgeAlpha),
+                        4.0f * dpiScale);
+    const ImVec2 numberSize = ImGui::CalcTextSize(shortcut);
+    draw->AddText({badgeMin.x + (badgeSide - numberSize.x) * 0.5f,
+                   badgeMin.y + (badgeSide - numberSize.y) * 0.5f},
+                  IM_COL32(0, 0, 0, badgeAlpha), shortcut);
+
+    ImGui::SameLine(0.0f, ImGui::GetStyle().ItemInnerSpacing.x);
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextUnformatted(label);
+    ImGui::EndDisabled();
+    ImGui::PopID();
+    return enabled && activated;
+}
+
 bool LoadUiFont(ImGuiIO& io, const float dpiScale, const UiLanguage language) {
     std::array<wchar_t, MAX_PATH> windowsDirectory{};
     const UINT length = GetWindowsDirectoryW(windowsDirectory.data(),
@@ -690,7 +721,27 @@ void Application::DrawViewport() {
                 ActivateProjectionTab(tab);
                 Vec2 available{std::max(ImGui::GetContentRegionAvail().x, 1.0f),
                                std::max(ImGui::GetContentRegionAvail().y, 1.0f)};
-                Vec2 drawSize = available;
+                const char* workingLabel = Tr("Working");
+                const char* generatedLabel = Tr("Generated Image");
+                const char* originalLabel = Tr("Original");
+                const ImGuiStyle& style = ImGui::GetStyle();
+                const float padding = 9.0f * dpiScale_;
+                const float rowHeight = ImGui::GetFrameHeight();
+                const float badgeSide = rowHeight * 0.78f;
+                const float labelWidth = std::max({ImGui::CalcTextSize(workingLabel).x,
+                                                   ImGui::CalcTextSize(generatedLabel).x,
+                                                   ImGui::CalcTextSize(originalLabel).x});
+                const ImVec2 panelSize{padding * 2.0f + rowHeight + badgeSide +
+                                           style.ItemInnerSpacing.x * 2.0f + labelWidth,
+                                       padding * 2.0f + rowHeight * 3.0f +
+                                           style.ItemSpacing.y * 2.0f};
+                const float panelMargin = 12.0f * dpiScale_;
+                const float controlRailWidth = panelSize.x + panelMargin * 2.0f;
+                Vec2 viewportArea = available;
+                if (available.x > controlRailWidth + 96.0f * dpiScale_) {
+                    viewportArea.x -= controlRailWidth;
+                }
+                Vec2 drawSize = viewportArea;
                 const float frozenAspect = static_cast<float>(tab.frame.width) /
                     std::max(tab.frame.height, std::uint32_t{1});
                 if (drawSize.x / drawSize.y > frozenAspect) {
@@ -700,8 +751,8 @@ void Application::DrawViewport() {
                 }
                 const ImVec2 regionTopLeft = ImGui::GetCursorScreenPos();
                 const ImVec2 afterCanvas{regionTopLeft.x, regionTopLeft.y + available.y};
-                const ImVec2 topLeft{regionTopLeft.x + (available.x - drawSize.x) * 0.5f,
-                                     regionTopLeft.y + (available.y - drawSize.y) * 0.5f};
+                const ImVec2 topLeft{regionTopLeft.x + (viewportArea.x - drawSize.x) * 0.5f,
+                                     regionTopLeft.y + (viewportArea.y - drawSize.y) * 0.5f};
                 ImGui::SetCursorScreenPos(topLeft);
                 if (!tab.projectionLoaded && tab.viewMode == ProjectionViewMode::GeneratedFull) {
                     tab.viewMode = ProjectionViewMode::Working;
@@ -740,20 +791,7 @@ void Application::DrawViewport() {
                              ImVec2(displayUvMax.x, displayUvMax.y));
                 bool viewportHovered = ImGui::IsItemHovered();
 
-                const std::string workingLabel = "1  " + std::string(Tr("Working"));
-                const std::string generatedLabel = "2  " + std::string(Tr("Generated Image"));
-                const std::string originalLabel = "3  " + std::string(Tr("Original"));
-                const ImGuiStyle& style = ImGui::GetStyle();
-                const float padding = 9.0f * dpiScale_;
-                const float rowHeight = ImGui::GetFrameHeight();
-                const float labelWidth = std::max({ImGui::CalcTextSize(workingLabel.c_str()).x,
-                                                   ImGui::CalcTextSize(generatedLabel.c_str()).x,
-                                                   ImGui::CalcTextSize(originalLabel.c_str()).x});
-                const ImVec2 panelSize{padding * 2.0f + rowHeight + style.ItemInnerSpacing.x +
-                                           labelWidth,
-                                       padding * 2.0f + rowHeight * 3.0f +
-                                           style.ItemSpacing.y * 2.0f};
-                const ImVec2 panelMin{topLeft.x + drawSize.x - panelSize.x - 12.0f * dpiScale_,
+                const ImVec2 panelMin{regionTopLeft.x + available.x - panelSize.x - panelMargin,
                                       topLeft.y + 12.0f * dpiScale_};
                 const ImVec2 panelMax{panelMin.x + panelSize.x, panelMin.y + panelSize.y};
                 ImDrawList* overlay = ImGui::GetWindowDrawList();
@@ -763,19 +801,19 @@ void Application::DrawViewport() {
                                  9.0f * dpiScale_, 0, 1.0f * dpiScale_);
                 ImGui::SetCursorScreenPos({panelMin.x + padding, panelMin.y + padding});
                 ImGui::BeginGroup();
-                int selectedMode = static_cast<int>(tab.viewMode);
-                if (ImGui::RadioButton(workingLabel.c_str(), selectedMode ==
-                                      static_cast<int>(ProjectionViewMode::Working))) {
+                if (ShortcutModeRadio("WorkingMode", "1", workingLabel,
+                                      tab.viewMode == ProjectionViewMode::Working,
+                                      true, dpiScale_)) {
                     tab.viewMode = ProjectionViewMode::Working;
                 }
-                ImGui::BeginDisabled(!tab.projectionLoaded);
-                if (ImGui::RadioButton(generatedLabel.c_str(), selectedMode ==
-                                      static_cast<int>(ProjectionViewMode::GeneratedFull))) {
+                if (ShortcutModeRadio("GeneratedMode", "2", generatedLabel,
+                                      tab.viewMode == ProjectionViewMode::GeneratedFull,
+                                      tab.projectionLoaded, dpiScale_)) {
                     tab.viewMode = ProjectionViewMode::GeneratedFull;
                 }
-                ImGui::EndDisabled();
-                if (ImGui::RadioButton(originalLabel.c_str(), selectedMode ==
-                                      static_cast<int>(ProjectionViewMode::Original))) {
+                if (ShortcutModeRadio("OriginalMode", "3", originalLabel,
+                                      tab.viewMode == ProjectionViewMode::Original,
+                                      true, dpiScale_)) {
                     tab.viewMode = ProjectionViewMode::Original;
                 }
                 ImGui::EndGroup();
