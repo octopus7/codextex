@@ -696,7 +696,9 @@ void Application::DrawViewport() {
         for (auto& tab : projectionTabs_) {
             std::string visible = std::string(Tr("Projection")) + " " + std::to_string(tab.id);
             if (tab.generationStartedAt && codex_.IsBusy(tab.id)) {
-                visible += " (" + std::string(Tr("Generating")) + ")";
+                const auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(
+                    std::chrono::steady_clock::now() - *tab.generationStartedAt).count();
+                visible += " (" + FormatImageGenDuration(elapsed) + ")";
             }
             const std::string label = visible + "###ProjectionTab" + std::to_string(tab.id);
             bool open = true;
@@ -1187,7 +1189,22 @@ void Application::DrawTools() {
             const float progressWidth = std::max(
                 1.0f, ImGui::GetContentRegionAvail().x -
                 cancelWidth - style.ItemSpacing.x);
-            ImGui::ProgressBar(progress, ImVec2(progressWidth, 0.0f), Tr("Generating"));
+            const std::string progressLabel = std::string(Tr("Generating")) + " " +
+                FormatImageGenDuration(static_cast<std::int64_t>(elapsedSeconds));
+            ImGui::ProgressBar(progress, ImVec2(progressWidth, 0.0f), "");
+            const ImVec2 progressMin = ImGui::GetItemRectMin();
+            const ImVec2 progressMax = ImGui::GetItemRectMax();
+            const ImVec2 textSize = ImGui::CalcTextSize(progressLabel.c_str());
+            const ImVec2 textPosition{
+                progressMin.x + (progressMax.x - progressMin.x - textSize.x) * 0.5f,
+                progressMin.y + (progressMax.y - progressMin.y - textSize.y) * 0.5f};
+            ImDrawList* progressDraw = ImGui::GetWindowDrawList();
+            progressDraw->PushClipRect(progressMin, progressMax, true);
+            progressDraw->AddText({textPosition.x + 1.0f, textPosition.y + 1.0f},
+                                  IM_COL32(0, 0, 0, 190), progressLabel.c_str());
+            progressDraw->AddText(textPosition, ImGui::GetColorU32(ImGuiCol_Text),
+                                  progressLabel.c_str());
+            progressDraw->PopClipRect();
             ImGui::SameLine();
             if (ImGui::Button(Tr("Cancel AI"))) codex_.Cancel(tab->id);
         } else {
