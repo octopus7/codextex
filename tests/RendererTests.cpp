@@ -559,3 +559,70 @@ f 1/1 2/2 3/3 4/4
     CHECK(baked.Pixels() == basePixels);
     renderer.Shutdown();
 }
+
+TEST_CASE("WARP projection shifting never paints outside the shifted image") {
+    HiddenWindow window;
+    REQUIRE(window.Get() != nullptr);
+
+    codextex::Renderer renderer;
+    std::string error;
+    REQUIRE(renderer.Initialize(window.Get(), error, true));
+    const auto directory = std::filesystem::temp_directory_path() / "codextex-tests";
+    std::filesystem::create_directories(directory);
+    const auto objPath = directory / "projection-shift-quad.obj";
+    std::ofstream obj(objPath, std::ios::binary | std::ios::trunc);
+    obj << R"OBJ(
+v -1 -1 0
+v  1 -1 0
+v  1  1 0
+v -1  1 0
+vt 0 0
+vt 1 0
+vt 1 1
+vt 0 1
+f 1/1 2/2 3/3 4/4
+)OBJ";
+    obj.close();
+    codextex::Mesh mesh;
+    REQUIRE(mesh.LoadObj(objPath, error));
+    REQUIRE(renderer.SetMesh(mesh, error));
+
+    std::vector<std::uint8_t> basePixels(8 * 8 * 4, 255);
+    for (std::size_t pixel = 0; pixel < basePixels.size(); pixel += 4) {
+        basePixels[pixel] = 14;
+        basePixels[pixel + 1] = 28;
+        basePixels[pixel + 2] = 42;
+        basePixels[pixel + 3] = 73;
+    }
+    codextex::TextureImage base;
+    base.Assign(8, 8, basePixels);
+    REQUIRE(renderer.SetWorkingTexture(base, error));
+
+    codextex::CameraState camera;
+    camera.pitch = 0;
+    camera.distance = 5;
+    codextex::TextureImage capture;
+    codextex::Renderer::ProjectionFrame frame;
+    REQUIRE(renderer.CaptureFrame(camera, 128, 128, capture, frame, error));
+    renderer.ActivateProjectionFrame(frame);
+
+    std::vector<std::uint8_t> projectionPixels(128 * 128 * 4, 255);
+    for (std::size_t pixel = 0; pixel < projectionPixels.size(); pixel += 4) {
+        projectionPixels[pixel] = 240;
+        projectionPixels[pixel + 1] = 10;
+        projectionPixels[pixel + 2] = 10;
+    }
+    codextex::TextureImage projection;
+    projection.Assign(128, 128, projectionPixels);
+    REQUIRE(renderer.SetProjectionImage(projection, error));
+    codextex::MaskImage mask;
+    mask.Resize(128, 128, true);
+    renderer.SetMask(mask, 0);
+
+    renderer.SetProjectionOffset(2.0f, 0.0f);
+    REQUIRE(renderer.BakeProjection(75, error));
+    codextex::TextureImage baked;
+    REQUIRE(renderer.ReadWorkingTexture(baked, error));
+    CHECK(baked.Pixels() == basePixels);
+    renderer.Shutdown();
+}
