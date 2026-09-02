@@ -78,6 +78,7 @@ if(CODEXTEX_BUILD_TESTS)
     tests/MaskTests.cpp
     tests/LocalizationTests.cpp
     tests/PromptBuilderTests.cpp
+    tests/ProjectionViewTransformTests.cpp
     tests/RendererTests.cpp
     tests/TextureImageTests.cpp
   )
