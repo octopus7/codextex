@@ -8,8 +8,12 @@ TEST_CASE("ImageGen prompt declares edit invariants") {
     CHECK(prompt.find("precise-object-edit") != std::string::npos);
     CHECK(prompt.find("preserve camera") != std::string::npos);
     CHECK(prompt.find("surrounding reference objects") != std::string::npos);
-    CHECK(prompt.find("keep them unchanged") != std::string::npos);
+    CHECK(prompt.find("Keep every reference object") != std::string::npos);
     CHECK(prompt.find("square 1:1") != std::string::npos);
+    CHECK(prompt.find("not a new rendering") != std::string::npos);
+    CHECK(prompt.find("pixel-for-pixel unchanged") != std::string::npos);
+    CHECK(prompt.find("same x/y pixel coordinates") != std::string::npos);
+    CHECK(prompt.find("ignore that part of the request") != std::string::npos);
     CHECK(prompt.find("paint worn red leather") != std::string::npos);
 }
 

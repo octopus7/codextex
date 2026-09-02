@@ -9,9 +9,11 @@
 #include <Windows.h>
 
 #include <array>
+#include <chrono>
 #include <cstdint>
 #include <deque>
 #include <filesystem>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -27,34 +29,45 @@ public:
     static LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARAM lParam);
 
 private:
-    enum class EditMode { Navigate, Face, Mask };
+    enum class EditMode { Navigate, Face };
 
     void DrawUi();
     void DrawMenuBar();
     void DrawViewport();
     void DrawTools();
     void DrawTexturePreview();
+    void DrawSessionTemp();
     void HandleCodexEvents();
-    void HandleViewportInput(const Vec2& topLeft, const Vec2& size);
+    struct ProjectionTab;
+    void HandleViewportInput(const Vec2& topLeft, const Vec2& size, ProjectionTab* tab);
     void ApplyDpiScale(float scale);
 
     bool OpenObj();
     bool OpenTexture();
-    bool OpenProjection();
+    bool OpenProjection(ProjectionTab& tab);
     bool AddReferenceAsset();
     void RemoveReferenceAsset(std::size_t index);
     bool RebuildReferenceAssets();
     bool SaveTexture(bool choosePath);
-    bool CaptureView();
-    void CancelProjection();
+    bool CreateProjectionTab(bool generate);
+    void CloseProjectionTab(std::uint64_t id);
+    void ClearProjectionTabs();
+    ProjectionTab* ActiveProjectionTab();
+    ProjectionTab* FindProjectionTab(std::uint64_t id);
+    void ActivateMainViewport();
+    void ActivateProjectionTab(ProjectionTab& tab);
     void FitCamera();
     void HideSelectedFaces();
     void UndoHiddenFaces();
     void ShowAllFaces();
-    void ApplyMaskChange();
-    void Bake();
+    void ApplyMaskChange(ProjectionTab& tab);
+    void Bake(ProjectionTab& tab);
     void UndoTexture();
     void RedoTexture();
+    void RefreshTempFiles();
+    void SelectTempFile(const std::filesystem::path& path);
+    void DeleteTempFile(const std::filesystem::path& path);
+    void DeleteAllTempFiles();
     void SetStatus(std::string status, bool error = false);
 
     std::filesystem::path OpenFileDialog(const wchar_t* title, const wchar_t* filter);
@@ -68,8 +81,6 @@ private:
     CodexBridge codex_;
     Mesh mesh_;
     TextureImage sourceTexture_;
-    TextureImage projectionImage_;
-    MaskImage mask_;
     CameraState camera_{};
 
     struct ReferenceAsset {
@@ -80,21 +91,50 @@ private:
     };
     std::vector<ReferenceAsset> referenceAssets_;
 
+    struct ProjectionTab {
+        std::uint64_t id{};
+        Renderer::ProjectionFrame frame;
+        CameraState camera{};
+        std::vector<std::uint8_t> hiddenFaces;
+        TextureImage projectionImage;
+        MaskImage mask;
+        std::filesystem::path capturePath;
+        std::filesystem::path projectionPath;
+        std::string status = "Waiting for projection image.";
+        bool statusIsError{};
+        bool projectionLoaded{};
+        bool referenceAssetsVisible{true};
+        bool applied{};
+        float brushRadius{28.0f};
+        int featherRadius{16};
+        float maxAngleDegrees{75.0f};
+        LocalSideFilter localSideFilter{LocalSideFilter::Both};
+        std::uint64_t baseTextureRevision{};
+        std::optional<std::chrono::steady_clock::time_point> generationStartedAt;
+    };
+    std::vector<ProjectionTab> projectionTabs_;
+
+    struct TempFileInfo {
+        std::filesystem::path path;
+        std::uintmax_t size{};
+    };
+    std::vector<TempFileInfo> tempFiles_;
+    std::filesystem::path selectedTempFile_;
+    TextureImage tempPreviewImage_;
+    std::string tempPreviewText_;
+    std::string tempPreviewMessage_;
+
     std::filesystem::path sessionDirectory_;
     std::filesystem::path texturePath_;
-    std::filesystem::path capturePath_;
-    std::filesystem::path projectionPath_;
+    std::filesystem::path imageGenLogPath_;
     bool meshLoaded_{};
     bool textureLoaded_{};
-    bool captured_{};
-    bool projectionLoaded_{};
     bool dirty_{};
     bool referenceAssetsVisible_{true};
     bool shadingEnabled_{};
     bool dockLayoutInitialized_{};
     bool imguiBackendsInitialized_{};
     float dpiScale_{1.0f};
-    LocalSideFilter localSideFilter_{LocalSideFilter::Both};
 
     std::vector<std::uint8_t> hiddenFaces_;
     std::vector<std::uint8_t> selectedFaces_;
@@ -107,10 +147,13 @@ private:
     bool maskInclude_{true};
     bool lassoActive_{};
     std::vector<Vec2> lassoPoints_;
-    float brushRadius_{28.0f};
-    int featherRadius_{16};
-    float maxAngleDegrees_{75.0f};
     std::array<char, 2048> generationPrompt_{};
+    std::optional<std::uint64_t> activeProjectionId_;
+    std::optional<std::uint64_t> pendingProjectionSelection_;
+    std::optional<std::uint64_t> rendererProjectionId_;
+    std::uint64_t nextProjectionId_{1};
+    std::uint64_t textureRevision_{};
+    bool tempFilesDirty_{true};
     std::string status_ = "Open an OBJ and a PNG texture.";
     bool statusIsError_{};
 };

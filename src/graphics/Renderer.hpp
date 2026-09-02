@@ -32,6 +32,23 @@ enum class LocalSideFilter : std::uint32_t {
 
 class Renderer {
 public:
+    struct ProjectionFrame {
+        Microsoft::WRL::ComPtr<ID3D11Texture2D> depth;
+        Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> depthSrv;
+        Microsoft::WRL::ComPtr<ID3D11Buffer> indexBuffer;
+        CameraState camera{};
+        std::uint32_t width{};
+        std::uint32_t height{};
+        std::uint32_t cropX{};
+        std::uint32_t cropY{};
+        std::uint32_t cropSize{};
+        std::uint32_t indexCount{};
+
+        [[nodiscard]] bool Valid() const noexcept {
+            return depthSrv != nullptr && indexBuffer != nullptr && width != 0 && height != 0;
+        }
+    };
+
     bool Initialize(HWND window, std::string& error, bool forceWarp = false);
     void Shutdown();
     void Resize(std::uint32_t width, std::uint32_t height);
@@ -41,6 +58,8 @@ public:
     bool SetMesh(const Mesh& mesh, std::string& error);
     bool SetWorkingTexture(const TextureImage& image, std::string& error);
     bool SetProjectionImage(const TextureImage& image, std::string& error);
+    bool SetSessionPreviewImage(const TextureImage& image, std::string& error);
+    void ClearSessionPreviewImage();
     bool AddReferenceAsset(const Mesh& mesh, const TextureImage& texture, std::string& error);
     void ClearReferenceAssets();
     void SetReferenceAssetsVisible(bool visible) noexcept { referenceAssetsVisible_ = visible; }
@@ -54,10 +73,16 @@ public:
     void RenderViewport(std::uint32_t width, std::uint32_t height, const CameraState& camera);
     [[nodiscard]] ID3D11ShaderResourceView* ViewportTexture() const noexcept { return colorSrv_.Get(); }
     [[nodiscard]] ID3D11ShaderResourceView* WorkingTexture() const noexcept { return workingSrv_.Get(); }
+    [[nodiscard]] ID3D11ShaderResourceView* SessionPreviewTexture() const noexcept {
+        return sessionPreviewSrv_.Get();
+    }
     [[nodiscard]] std::uint32_t ViewportWidth() const noexcept { return viewportWidth_; }
     [[nodiscard]] std::uint32_t ViewportHeight() const noexcept { return viewportHeight_; }
 
     bool CaptureFrame(const CameraState& camera, TextureImage& image, std::string& error);
+    bool CaptureFrame(const CameraState& camera, TextureImage& image, ProjectionFrame& frame,
+                      std::string& error);
+    void ActivateProjectionFrame(const ProjectionFrame& frame);
     bool BakeProjection(float maxAngleDegrees, std::string& error);
     bool ReadWorkingTexture(TextureImage& image, std::string& error) const;
 
@@ -142,6 +167,8 @@ private:
     Microsoft::WRL::ComPtr<ID3D11RenderTargetView> workingRtv_;
     Microsoft::WRL::ComPtr<ID3D11Texture2D> projectionTexture_;
     Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> projectionSrv_;
+    Microsoft::WRL::ComPtr<ID3D11Texture2D> sessionPreviewTexture_;
+    Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> sessionPreviewSrv_;
     Microsoft::WRL::ComPtr<ID3D11Texture2D> maskBinaryTexture_;
     Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> maskBinarySrv_;
     Microsoft::WRL::ComPtr<ID3D11Texture2D> maskTexture_;

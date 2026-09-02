@@ -11,6 +11,12 @@ void Respond(const nlohmann::json& request, nlohmann::json result) {
               << '\n' << std::flush;
 }
 
+void RespondError(const nlohmann::json& request, const std::string& message) {
+    std::cout << nlohmann::json{{"id", request.at("id")},
+                                {"error", {{"code", -32600}, {"message", message}}}}.dump()
+              << '\n' << std::flush;
+}
+
 void Notify(const std::string& method, nlohmann::json params) {
     std::cout << nlohmann::json{{"method", method}, {"params", std::move(params)}}.dump()
               << '\n' << std::flush;
@@ -29,6 +35,8 @@ std::string Environment(const char* name, const std::string& fallback = {}) {
 
 int main() {
     const std::string mode = Environment("CODEXTEX_MOCK_MODE", "success");
+    std::uint64_t threadCounter = 0;
+    std::uint64_t turnCounter = 0;
     std::string line;
     while (std::getline(std::cin, line)) {
         if (line.empty()) continue;
@@ -47,10 +55,21 @@ int main() {
                                                         {"enabled", enabled},
                                                         {"path", "C:/mock/imagegen/SKILL.md"}}}}}}}});
         } else if (method == "thread/start") {
-            Respond(request, {{"thread", {{"id", "mock-thread"}}}});
+            const std::string sandbox = request.at("params").value("sandbox", "");
+            const std::string expected = mode == "legacy-sandbox"
+                ? "workspaceWrite" : "workspace-write";
+            if (sandbox != expected) {
+                RespondError(request, "Invalid request: unknown variant `" + sandbox + "`");
+            } else {
+                Respond(request, {{"thread", {{"id", "mock-thread-" +
+                    std::to_string(++threadCounter)}}}});
+            }
         } else if (method == "turn/start") {
             const bool mask = request.at("params").contains("outputSchema");
-            Respond(request, {{"turn", {{"id", mask ? "mask-turn" : "generation-turn"}}}});
+            const std::string threadId = request.at("params").at("threadId").get<std::string>();
+            const std::string turnId = (mask ? "mask-turn-" : "generation-turn-") +
+                std::to_string(++turnCounter);
+            Respond(request, {{"turn", {{"id", turnId}}}});
             if (mask) {
                 const nlohmann::json proposal = {
                     {"polygons", {{{"operation", "include"},
@@ -59,21 +78,24 @@ int main() {
                     {"suggestedFeatherPx", 12},
                     {"rationale", "mock visible surface"},
                 };
-                Notify("item/completed", {{"item", {{"type", "agentMessage"},
-                                                       {"text", proposal.dump()}}}});
-                Notify("turn/completed", {{"turn", {{"id", "mask-turn"},
-                                                       {"status", "completed"}}}});
+                Notify("item/completed", {{"threadId", threadId}, {"turnId", turnId},
+                    {"item", {{"type", "agentMessage"}, {"text", proposal.dump()}}}});
+                Notify("turn/completed", {{"threadId", threadId}, {"turnId", turnId},
+                    {"turn", {{"id", turnId}, {"status", "completed"}}}});
             } else if (mode != "hold-generation") {
-                Notify("item/completed", {{"item", {{"type", "imageGeneration"},
-                                                       {"status", "completed"},
-                                                       {"savedPath", Environment("CODEXTEX_MOCK_IMAGE")}}}});
-                Notify("turn/completed", {{"turn", {{"id", "generation-turn"},
-                                                       {"status", "completed"}}}});
+                Notify("item/completed", {{"threadId", threadId}, {"turnId", turnId},
+                    {"item", {{"type", "imageGeneration"}, {"status", "completed"},
+                              {"savedPath", Environment("CODEXTEX_MOCK_IMAGE")}}}});
+                Notify("turn/completed", {{"threadId", threadId}, {"turnId", turnId},
+                    {"turn", {{"id", turnId}, {"status", "completed"}}}});
             }
         } else if (method == "turn/interrupt") {
             Respond(request, nlohmann::json::object());
-            Notify("turn/completed", {{"turn", {{"id", "generation-turn"},
-                                                   {"status", "interrupted"}}}});
+            const auto& params = request.at("params");
+            const std::string threadId = params.at("threadId").get<std::string>();
+            const std::string turnId = params.at("turnId").get<std::string>();
+            Notify("turn/completed", {{"threadId", threadId}, {"turnId", turnId},
+                {"turn", {{"id", turnId}, {"status", "interrupted"}}}});
         } else {
             std::cout << nlohmann::json{{"id", request.at("id")},
                                         {"error", {{"message", "unsupported mock method"}}}}.dump()

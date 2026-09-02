@@ -48,15 +48,17 @@ if it is not already present.
    their authored world coordinates and appear only as viewport/ImageGen context.
 3. Orbit to the desired view. In Face mode, click or lasso occluding triangles
    and hide them to expose recessed areas.
-4. Capture the view. The cyan `ImageGen 1:1 crop` frame becomes the square image
-   sent to ImageGen. Visible reference sets inside it are included, while the
-   frozen bake depth contains only the primary OBJ.
-5. Generate a projection with Codex ImageGen or open an external PNG with the
-   same aspect ratio.
-6. In Mask mode, optionally turn off `Show in viewport` for the reference sets,
-   paint or lasso the projection area, adjust inward feathering,
-   preview, then bake.
-7. Repeat from another view, then save the PNG texture.
+4. Enter a prompt and choose `Generate from current view`. CodexTex immediately
+   captures the cyan square and opens a locked projection workspace tab; there is
+   no separate capture step. `External PNG from current view` creates the same tab
+   without an AI request.
+5. Return to `Main Viewport` while ImageGen runs and create more projection tabs
+   from other camera positions. Each tab owns its frozen camera, depth, hidden-face
+   snapshot, mask, AI job, and optional reference visibility.
+6. In any completed projection tab, paint or lasso the projection area, adjust
+   inward feathering, preview, then bake.
+7. All projection tabs bake into the same live working texture and see changes
+   made by other tabs. Undo/redo is shared. Repeat as needed, then save the PNG.
 
 The viewport starts in an unlit Base Color mode so PNG texels are displayed
 without lighting multiplication. `Neutral shading` is an optional display and
@@ -72,6 +74,11 @@ spacing, and the initial window size are rasterized at the monitor's native DPI,
 and are rebuilt after a `WM_DPICHANGED` monitor transition instead of relying on
 Windows bitmap scaling.
 
+Projection tabs show the fixed OBJ, Base Color, triangle count, capture size,
+and hidden-face snapshot in a read-only source panel. Primary OBJ/texture loading
+is available only from `Main Viewport`; inference reference OBJ + PNG pairs can
+still be added, removed, or toggled from either context.
+
 For overlapping or mirrored UV layouts, `Mirrored UV side` can exclude either
 the OBJ's local `-X` or `+X` side from projection preview and baking. This stops
 the opposite projection from overwriting the same UV region. Because both model
@@ -82,6 +89,13 @@ Generated images are first produced by Codex's built-in ImageGen at its normal
 Codex-managed location. CodexTex consumes `imageGeneration.savedPath` and
 copies the selected image into its per-process session directory. That session
 directory is removed on clean shutdown.
+
+The `Session Temp` panel lists files currently stored in that directory. PNG
+captures and generated images can be previewed directly; other files expose a
+bounded text/binary preview. Files can be deleted individually, or the whole
+session directory can be cleared without removing the directory itself. Deleting
+a file used by a projection workspace closes that tab and cancels its AI task;
+clearing everything closes all projection tabs after an explicit confirmation.
 
 CodexTex launches the first Codex App Server it can resolve from a native
 `codex.exe`, an npm `codex.cmd` shim, or the versioned Codex desktop installation
@@ -98,7 +112,7 @@ again during the UV-space bake.
 The test target covers OBJ validation and UV-overlap diagnostics, PNG RGBA
 round trips, mask/prompt parsing, an in-process WARP render/bake golden path,
 and a test-only JSONL App Server executable for signed-out, missing-skill,
-generation, structured-mask, and interrupt behavior. A real ImageGen E2E run
+generation, concurrent per-tab job routing, structured-mask, and interrupt behavior. A real ImageGen E2E run
 still requires a locally authenticated ChatGPT Codex installation.
 
 ## Scope

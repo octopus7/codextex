@@ -8,6 +8,7 @@
 #include <filesystem>
 #include <fstream>
 #include <optional>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -44,14 +45,15 @@ std::filesystem::path Session(const wchar_t* name) {
     return path;
 }
 
-std::vector<codextex::CodexEvent> WaitForIdle(codextex::CodexBridge& bridge) {
+std::vector<codextex::CodexEvent> WaitForIdle(codextex::CodexBridge& bridge,
+                                              const std::uint64_t jobId) {
     std::vector<codextex::CodexEvent> events;
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
     do {
         auto next = bridge.PollEvents();
         events.insert(events.end(), std::make_move_iterator(next.begin()),
                       std::make_move_iterator(next.end()));
-        if (!bridge.IsBusy()) {
+        if (!bridge.IsBusy(jobId)) {
             Sleep(20);
             auto finalEvents = bridge.PollEvents();
             events.insert(events.end(), std::make_move_iterator(finalEvents.begin()),
@@ -103,27 +105,58 @@ TEST_CASE("App Server mock delivers generated images and structured mask proposa
     const auto session = Session(L"mock-success");
     const auto sourceImage = session / "mock-source.png";
     const auto capture = session / "capture.png";
+    const auto diagnosticLog = session / "CodexTex-ImageGen.log";
+    std::ofstream(sourceImage, std::ios::binary) << "mock-png";
+    std::ofstream(capture, std::ios::binary) << "mock-capture";
+    ScopedEnvironment image(L"CODEXTEX_MOCK_IMAGE", sourceImage.c_str());
+
+    codextex::CodexBridge bridge;
+    REQUIRE(bridge.EnableDiagnosticLog(diagnosticLog));
+    REQUIRE(bridge.Start(session, std::filesystem::path(CODEXTEX_MOCK_CODEX_PATH)));
+    REQUIRE(bridge.IsAvailable());
+    constexpr std::uint64_t jobId = 7;
+    REQUIRE(bridge.BeginGeneration(jobId, capture, "mock material"));
+    const auto generationEvents = WaitForIdle(bridge, jobId);
+    const auto generated = std::find_if(generationEvents.begin(), generationEvents.end(),
+        [](const auto& event) { return event.type == codextex::CodexEventType::GeneratedImage; });
+    REQUIRE(generated != generationEvents.end());
+    CHECK(generated->jobId == jobId);
+    CHECK(std::filesystem::exists(generated->imagePath));
+
+    REQUIRE(bridge.BeginMaskProposal(jobId, capture, generated->imagePath));
+    const auto maskEvents = WaitForIdle(bridge, jobId);
+    const auto proposal = std::find_if(maskEvents.begin(), maskEvents.end(),
+        [](const auto& event) { return event.type == codextex::CodexEventType::MaskProposalReady; });
+    REQUIRE(proposal != maskEvents.end());
+    REQUIRE(proposal->maskProposal.has_value());
+    CHECK(proposal->maskProposal->suggestedFeatherPx == 12);
+
+    std::ifstream log(diagnosticLog, std::ios::binary);
+    std::ostringstream logText;
+    logText << log.rdbuf();
+    CHECK(logText.str().find("CodexTex ImageGen session started") != std::string::npos);
+    CHECK(logText.str().find("\"method\":\"thread/start\"") != std::string::npos);
+    CHECK(logText.str().find("\"sandbox\":\"workspace-write\"") != std::string::npos);
+    CHECK(logText.str().find("\"method\":\"turn/start\"") != std::string::npos);
+    CHECK(logText.str().find("\"type\":\"imageGeneration\"") != std::string::npos);
+}
+
+TEST_CASE("App Server falls back to the legacy camel-case sandbox mode") {
+    ScopedEnvironment mode(L"CODEXTEX_MOCK_MODE", L"legacy-sandbox");
+    const auto session = Session(L"mock-legacy-sandbox");
+    const auto sourceImage = session / "mock-source.png";
+    const auto capture = session / "capture.png";
     std::ofstream(sourceImage, std::ios::binary) << "mock-png";
     std::ofstream(capture, std::ios::binary) << "mock-capture";
     ScopedEnvironment image(L"CODEXTEX_MOCK_IMAGE", sourceImage.c_str());
 
     codextex::CodexBridge bridge;
     REQUIRE(bridge.Start(session, std::filesystem::path(CODEXTEX_MOCK_CODEX_PATH)));
-    REQUIRE(bridge.IsAvailable());
-    REQUIRE(bridge.BeginGeneration(capture, "mock material"));
-    const auto generationEvents = WaitForIdle(bridge);
-    const auto generated = std::find_if(generationEvents.begin(), generationEvents.end(),
-        [](const auto& event) { return event.type == codextex::CodexEventType::GeneratedImage; });
-    REQUIRE(generated != generationEvents.end());
-    CHECK(std::filesystem::exists(generated->imagePath));
-
-    REQUIRE(bridge.BeginMaskProposal(capture, generated->imagePath));
-    const auto maskEvents = WaitForIdle(bridge);
-    const auto proposal = std::find_if(maskEvents.begin(), maskEvents.end(),
-        [](const auto& event) { return event.type == codextex::CodexEventType::MaskProposalReady; });
-    REQUIRE(proposal != maskEvents.end());
-    REQUIRE(proposal->maskProposal.has_value());
-    CHECK(proposal->maskProposal->suggestedFeatherPx == 12);
+    REQUIRE(bridge.BeginGeneration(1, capture, "legacy sandbox"));
+    const auto events = WaitForIdle(bridge, 1);
+    CHECK(std::any_of(events.begin(), events.end(), [](const auto& event) {
+        return event.type == codextex::CodexEventType::GeneratedImage;
+    }));
 }
 
 TEST_CASE("App Server mock interrupts an active generation") {
@@ -134,13 +167,42 @@ TEST_CASE("App Server mock interrupts an active generation") {
 
     codextex::CodexBridge bridge;
     REQUIRE(bridge.Start(session, std::filesystem::path(CODEXTEX_MOCK_CODEX_PATH)));
-    REQUIRE(bridge.BeginGeneration(capture, "hold"));
-    REQUIRE(bridge.IsBusy());
-    bridge.Cancel();
-    const auto events = WaitForIdle(bridge);
-    CHECK_FALSE(bridge.IsBusy());
+    REQUIRE(bridge.BeginGeneration(11, capture, "hold"));
+    REQUIRE(bridge.IsBusy(11));
+    bridge.Cancel(11);
+    const auto events = WaitForIdle(bridge, 11);
+    CHECK_FALSE(bridge.IsBusy(11));
     CHECK(std::any_of(events.begin(), events.end(), [](const auto& event) {
         return event.type == codextex::CodexEventType::Error &&
                event.message.find("interrupted") != std::string::npos;
+    }));
+}
+
+TEST_CASE("App Server routes concurrent projection jobs independently") {
+    ScopedEnvironment mode(L"CODEXTEX_MOCK_MODE", L"hold-generation");
+    const auto session = Session(L"mock-concurrent");
+    const auto capture = session / "capture.png";
+    std::ofstream(capture, std::ios::binary) << "mock-capture";
+
+    codextex::CodexBridge bridge;
+    REQUIRE(bridge.Start(session, std::filesystem::path(CODEXTEX_MOCK_CODEX_PATH)));
+    REQUIRE(bridge.BeginGeneration(21, capture, "first"));
+    REQUIRE(bridge.BeginGeneration(22, capture, "second"));
+    CHECK(bridge.IsBusy(21));
+    CHECK(bridge.IsBusy(22));
+
+    bridge.Cancel(21);
+    const auto firstEvents = WaitForIdle(bridge, 21);
+    CHECK_FALSE(bridge.IsBusy(21));
+    CHECK(bridge.IsBusy(22));
+    CHECK(std::any_of(firstEvents.begin(), firstEvents.end(), [](const auto& event) {
+        return event.jobId == 21 && event.type == codextex::CodexEventType::Error;
+    }));
+
+    bridge.Cancel(22);
+    const auto secondEvents = WaitForIdle(bridge, 22);
+    CHECK_FALSE(bridge.IsBusy(22));
+    CHECK(std::any_of(secondEvents.begin(), secondEvents.end(), [](const auto& event) {
+        return event.jobId == 22 && event.type == codextex::CodexEventType::Error;
     }));
 }

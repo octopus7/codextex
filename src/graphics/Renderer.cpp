@@ -628,6 +628,16 @@ bool Renderer::SetProjectionImage(const TextureImage& image, std::string& error)
     return UploadRgbaTexture(image, false, projectionTexture_, projectionSrv_, nullptr, error);
 }
 
+bool Renderer::SetSessionPreviewImage(const TextureImage& image, std::string& error) {
+    return UploadRgbaTexture(image, false, sessionPreviewTexture_, sessionPreviewSrv_, nullptr,
+                             error);
+}
+
+void Renderer::ClearSessionPreviewImage() {
+    sessionPreviewSrv_.Reset();
+    sessionPreviewTexture_.Reset();
+}
+
 bool Renderer::CreateMaskResources(const std::uint32_t width, const std::uint32_t height) {
     maskBinaryTexture_.Reset();
     maskBinarySrv_.Reset();
@@ -910,6 +920,12 @@ void Renderer::RenderViewport(const std::uint32_t width, const std::uint32_t hei
 }
 
 bool Renderer::CaptureFrame(const CameraState& camera, TextureImage& image, std::string& error) {
+    ProjectionFrame frame;
+    return CaptureFrame(camera, image, frame, error);
+}
+
+bool Renderer::CaptureFrame(const CameraState& camera, TextureImage& image,
+                            ProjectionFrame& frame, std::string& error) {
     if (!colorTexture_ || !depthTexture_ || viewportWidth_ == 0 || visibleIndices_.empty()) {
         error = "Render a visible mesh before capturing the view.";
         return false;
@@ -989,7 +1005,31 @@ bool Renderer::CaptureFrame(const CameraState& camera, TextureImage& image, std:
         return false;
     }
     image = fullCapture.CenterCroppedSquare();
+    frame.depth = frozenDepth_;
+    frame.depthSrv = frozenDepthSrv_;
+    frame.indexBuffer = frozenIndexBuffer_;
+    frame.camera = frozenCamera_;
+    frame.width = frozenWidth_;
+    frame.height = frozenHeight_;
+    frame.cropX = frozenCropX_;
+    frame.cropY = frozenCropY_;
+    frame.cropSize = frozenCropSize_;
+    frame.indexCount = frozenIndexCount_;
     return !image.Empty();
+}
+
+void Renderer::ActivateProjectionFrame(const ProjectionFrame& frame) {
+    frozenColor_.Reset();
+    frozenDepth_ = frame.depth;
+    frozenDepthSrv_ = frame.depthSrv;
+    frozenIndexBuffer_ = frame.indexBuffer;
+    frozenCamera_ = frame.camera;
+    frozenWidth_ = frame.width;
+    frozenHeight_ = frame.height;
+    frozenCropX_ = frame.cropX;
+    frozenCropY_ = frame.cropY;
+    frozenCropSize_ = frame.cropSize;
+    frozenIndexCount_ = frame.indexCount;
 }
 
 void Renderer::ClearFrozenFrame() {

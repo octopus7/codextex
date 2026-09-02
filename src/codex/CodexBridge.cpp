@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <cstdio>
 #include <cstring>
 #include <cwctype>
 #include <system_error>
@@ -139,10 +140,40 @@ std::string StripCodeFence(std::string text) {
     return text;
 }
 
+std::string LocalTimestamp() {
+    SYSTEMTIME time{};
+    GetLocalTime(&time);
+    std::array<char, 32> buffer{};
+    std::snprintf(buffer.data(), buffer.size(), "%04u-%02u-%02u %02u:%02u:%02u.%03u",
+                  time.wYear, time.wMonth, time.wDay, time.wHour, time.wMinute,
+                  time.wSecond, time.wMilliseconds);
+    return buffer.data();
+}
+
 } // namespace
 
 CodexBridge::~CodexBridge() {
     Stop();
+}
+
+bool CodexBridge::EnableDiagnosticLog(const std::filesystem::path& logPath) {
+    std::scoped_lock lock(logMutex_);
+    diagnosticLogPath_ = logPath;
+    HANDLE file = CreateFileW(diagnosticLogPath_.c_str(), FILE_APPEND_DATA,
+                              FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                              nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (file == INVALID_HANDLE_VALUE) {
+        diagnosticLogPath_.clear();
+        return false;
+    }
+    const std::string header = "\r\n[" + LocalTimestamp() +
+        "] ===== CodexTex ImageGen session started =====\r\n";
+    DWORD written = 0;
+    const bool success = WriteFile(file, header.data(), static_cast<DWORD>(header.size()),
+                                   &written, nullptr) && written == header.size();
+    CloseHandle(file);
+    if (!success) diagnosticLogPath_.clear();
+    return success;
 }
 
 bool CodexBridge::Start(const std::filesystem::path& sessionDirectory,
@@ -150,6 +181,7 @@ bool CodexBridge::Start(const std::filesystem::path& sessionDirectory,
     Stop();
     sessionDirectory_ = sessionDirectory;
     executableOverride_ = executableOverride;
+    LogDiagnostic("Starting Codex bridge. Session directory: " + PathUtf8(sessionDirectory_));
     std::error_code error;
     std::filesystem::create_directories(sessionDirectory_, error);
     if (error) {
@@ -168,8 +200,8 @@ bool CodexBridge::Start(const std::filesystem::path& sessionDirectory,
 }
 
 void CodexBridge::Stop() {
+    if (running_ || process_ != nullptr) LogDiagnostic("Stopping Codex App Server.");
     available_ = false;
-    busy_ = false;
     running_ = false;
     if (childStdIn_ != nullptr) {
         CloseHandle(childStdIn_);
@@ -209,9 +241,11 @@ void CodexBridge::Stop() {
         }
     }
     pending_.clear();
-    threadId_.clear();
-    activeTurnId_.clear();
-    operation_ = Operation::None;
+    {
+        std::scoped_lock stateLock(stateMutex_);
+        jobs_.clear();
+        jobsByThread_.clear();
+    }
 }
 
 bool CodexBridge::LaunchProcess() {
@@ -238,18 +272,30 @@ bool CodexBridge::LaunchProcess() {
         return false;
     }
 
-    HANDLE nullHandle = CreateFileW(L"NUL", GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE,
-                                    &security, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    HANDLE errorHandle = INVALID_HANDLE_VALUE;
+    if (!diagnosticLogPath_.empty()) {
+        errorHandle = CreateFileW(diagnosticLogPath_.c_str(), FILE_APPEND_DATA,
+                                  FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                                  &security, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (errorHandle != INVALID_HANDLE_VALUE) {
+            LogDiagnostic("Codex App Server stderr follows as raw timestamped records.");
+        }
+    }
+    if (errorHandle == INVALID_HANDLE_VALUE) {
+        errorHandle = CreateFileW(L"NUL", GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE,
+                                  &security, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    }
     STARTUPINFOW startup{};
     startup.cb = sizeof(startup);
     startup.dwFlags = STARTF_USESTDHANDLES;
     startup.hStdInput = stdinRead;
     startup.hStdOutput = stdoutWrite;
-    startup.hStdError = nullHandle;
+    startup.hStdError = errorHandle;
     PROCESS_INFORMATION processInfo{};
     DWORD launchError = ERROR_FILE_NOT_FOUND;
     const LaunchCandidate* launched = nullptr;
     for (const auto& candidate : candidates) {
+        LogDiagnostic("Trying App Server command: " + PathUtf8(candidate.command));
         std::wstring commandLine = candidate.commandLine;
         if (CreateProcessW(candidate.application.c_str(), commandLine.data(), nullptr, nullptr, TRUE,
                            CREATE_NO_WINDOW, nullptr, sessionDirectory_.c_str(), &startup,
@@ -261,7 +307,7 @@ bool CodexBridge::LaunchProcess() {
     }
     CloseHandle(stdinRead);
     CloseHandle(stdoutWrite);
-    if (nullHandle != INVALID_HANDLE_VALUE) CloseHandle(nullHandle);
+    if (errorHandle != INVALID_HANDLE_VALUE) CloseHandle(errorHandle);
     if (!launched) {
         CloseHandle(stdoutRead);
         CloseHandle(stdinWrite);
@@ -271,6 +317,7 @@ bool CodexBridge::LaunchProcess() {
     }
 
     launchedCommand_ = launched->command;
+    LogDiagnostic("App Server launched via: " + PathUtf8(launchedCommand_));
 
     process_ = processInfo.hProcess;
     processThread_ = processInfo.hThread;
@@ -333,73 +380,136 @@ bool CodexBridge::InitializeProtocol() {
     }
 }
 
-bool CodexBridge::EnsureThread() {
-    if (!threadId_.empty()) {
-        return true;
+bool CodexBridge::IsBusy() const noexcept {
+    std::scoped_lock lock(stateMutex_);
+    return std::ranges::any_of(jobs_, [](const auto& entry) { return entry.second.busy; });
+}
+
+bool CodexBridge::IsBusy(const std::uint64_t jobId) const noexcept {
+    std::scoped_lock lock(stateMutex_);
+    const auto found = jobs_.find(jobId);
+    return found != jobs_.end() && found->second.busy;
+}
+
+bool CodexBridge::EnsureThread(const std::uint64_t jobId) {
+    {
+        std::scoped_lock lock(stateMutex_);
+        const auto found = jobs_.find(jobId);
+        if (found != jobs_.end() && !found->second.threadId.empty()) return true;
     }
     try {
-        const auto result = SendRequest(
-            "thread/start",
-            {{"cwd", PathUtf8(sessionDirectory_)},
-             {"approvalPolicy", "never"},
-             {"sandbox", "workspaceWrite"},
-             {"ephemeral", true},
-             {"serviceName", "codextex"}});
-        threadId_ = result.at("thread").at("id").get<std::string>();
+        const auto startThread = [this](const char* sandbox) {
+            return SendRequest(
+                "thread/start",
+                {{"cwd", PathUtf8(sessionDirectory_)},
+                 {"approvalPolicy", "never"},
+                 {"sandbox", sandbox},
+                 {"ephemeral", true},
+                 {"serviceName", "codextex"}});
+        };
+
+        nlohmann::json result;
+        try {
+            // The Codex 0.152.0 schema serializes SandboxMode using kebab-case.
+            result = startThread("workspace-write");
+        } catch (const std::exception& exception) {
+            const std::string error = exception.what();
+            if (error.find("unknown variant") == std::string::npos) {
+                throw;
+            }
+            // Older App Server releases and the current online example use camelCase.
+            result = startThread("workspaceWrite");
+        }
+        const auto threadId = result.at("thread").at("id").get<std::string>();
+        {
+            std::scoped_lock lock(stateMutex_);
+            auto& job = jobs_[jobId];
+            job.threadId = threadId;
+            jobsByThread_[threadId] = jobId;
+        }
         return true;
     } catch (const std::exception& exception) {
-        PushEvent({CodexEventType::Error, std::string("Could not start a Codex session: ") + exception.what()});
+        CodexEvent event{CodexEventType::Error,
+                         std::string("Could not start a Codex session: ") + exception.what()};
+        event.jobId = jobId;
+        PushEvent(std::move(event));
         return false;
     }
 }
 
-bool CodexBridge::BeginGeneration(const std::filesystem::path& capturePath,
+bool CodexBridge::BeginGeneration(const std::uint64_t jobId,
+                                  const std::filesystem::path& capturePath,
                                   const std::string& userPrompt) {
-    if (!available_ || busy_ || userPrompt.empty() || !std::filesystem::exists(capturePath)) {
+    if (!available_ || userPrompt.empty() || !std::filesystem::exists(capturePath) ||
+        IsBusy(jobId)) {
         return false;
     }
-    if (!EnsureThread()) {
+    if (!EnsureThread(jobId)) {
         return false;
     }
-    busy_ = true;
-    operation_ = Operation::Generation;
+    std::string threadId;
+    {
+        std::scoped_lock lock(stateMutex_);
+        auto& job = jobs_[jobId];
+        job.busy = true;
+        job.operation = Operation::Generation;
+        threadId = job.threadId;
+    }
     try {
         const auto result = SendRequest(
             "turn/start",
-            {{"threadId", threadId_},
+            {{"threadId", threadId},
              {"input",
               {{{"type", "text"}, {"text", PromptBuilder::GenerationPrompt(userPrompt)}},
                {{"type", "localImage"}, {"path", PathUtf8(capturePath)}},
                {{"type", "skill"}, {"name", "imagegen"}, {"path", PathUtf8(imagegenSkillPath_)}}}}});
         {
             std::scoped_lock lock(stateMutex_);
-            activeTurnId_ = result.at("turn").at("id").get<std::string>();
+            auto& job = jobs_[jobId];
+            if (job.busy) job.activeTurnId = result.at("turn").at("id").get<std::string>();
         }
-        PushEvent({CodexEventType::Progress, "ImageGen started."});
+        CodexEvent event{CodexEventType::Progress, "ImageGen started."};
+        event.jobId = jobId;
+        PushEvent(std::move(event));
         return true;
     } catch (const std::exception& exception) {
-        busy_ = false;
-        operation_ = Operation::None;
-        PushEvent({CodexEventType::Error, std::string("Could not start ImageGen: ") + exception.what()});
+        {
+            std::scoped_lock lock(stateMutex_);
+            auto& job = jobs_[jobId];
+            job.busy = false;
+            job.operation = Operation::None;
+            job.activeTurnId.clear();
+        }
+        CodexEvent event{CodexEventType::Error,
+                         std::string("Could not start ImageGen: ") + exception.what()};
+        event.jobId = jobId;
+        PushEvent(std::move(event));
         return false;
     }
 }
 
-bool CodexBridge::BeginMaskProposal(const std::filesystem::path& capturePath,
+bool CodexBridge::BeginMaskProposal(const std::uint64_t jobId,
+                                    const std::filesystem::path& capturePath,
                                     const std::filesystem::path& generatedPath) {
-    if (!available_ || busy_ || !std::filesystem::exists(capturePath) ||
+    if (!available_ || IsBusy(jobId) || !std::filesystem::exists(capturePath) ||
         !std::filesystem::exists(generatedPath)) {
         return false;
     }
-    if (!EnsureThread()) {
+    if (!EnsureThread(jobId)) {
         return false;
     }
-    busy_ = true;
-    operation_ = Operation::Mask;
+    std::string threadId;
+    {
+        std::scoped_lock lock(stateMutex_);
+        auto& job = jobs_[jobId];
+        job.busy = true;
+        job.operation = Operation::Mask;
+        threadId = job.threadId;
+    }
     try {
         const auto result = SendRequest(
             "turn/start",
-            {{"threadId", threadId_},
+            {{"threadId", threadId},
              {"input",
               {{{"type", "text"}, {"text", PromptBuilder::MaskPrompt()}},
                {{"type", "localImage"}, {"path", PathUtf8(capturePath)}},
@@ -407,32 +517,55 @@ bool CodexBridge::BeginMaskProposal(const std::filesystem::path& capturePath,
              {"outputSchema", PromptBuilder::MaskOutputSchema()}});
         {
             std::scoped_lock lock(stateMutex_);
-            activeTurnId_ = result.at("turn").at("id").get<std::string>();
+            auto& job = jobs_[jobId];
+            if (job.busy) job.activeTurnId = result.at("turn").at("id").get<std::string>();
         }
-        PushEvent({CodexEventType::Progress, "Codex mask proposal started."});
+        CodexEvent event{CodexEventType::Progress, "Codex mask proposal started."};
+        event.jobId = jobId;
+        PushEvent(std::move(event));
         return true;
     } catch (const std::exception& exception) {
-        busy_ = false;
-        operation_ = Operation::None;
-        PushEvent({CodexEventType::Error, std::string("Could not start mask proposal: ") + exception.what()});
+        {
+            std::scoped_lock lock(stateMutex_);
+            auto& job = jobs_[jobId];
+            job.busy = false;
+            job.operation = Operation::None;
+            job.activeTurnId.clear();
+        }
+        CodexEvent event{CodexEventType::Error,
+                         std::string("Could not start mask proposal: ") + exception.what()};
+        event.jobId = jobId;
+        PushEvent(std::move(event));
         return false;
     }
 }
 
-void CodexBridge::Cancel() {
+void CodexBridge::Cancel(const std::uint64_t jobId) {
+    std::string threadId;
     std::string activeTurn;
     {
         std::scoped_lock lock(stateMutex_);
-        activeTurn = activeTurnId_;
+        const auto found = jobs_.find(jobId);
+        if (found == jobs_.end() || !found->second.busy) return;
+        threadId = found->second.threadId;
+        activeTurn = found->second.activeTurnId;
     }
-    if (!busy_ || threadId_.empty() || activeTurn.empty()) {
+    if (threadId.empty() || activeTurn.empty()) {
         return;
     }
     try {
-        (void)SendRequest("turn/interrupt", {{"threadId", threadId_}, {"turnId", activeTurn}},
+        (void)SendRequest("turn/interrupt", {{"threadId", threadId}, {"turnId", activeTurn}},
                           std::chrono::seconds(5));
     } catch (...) {
     }
+}
+
+void CodexBridge::Forget(const std::uint64_t jobId) {
+    std::scoped_lock lock(stateMutex_);
+    const auto found = jobs_.find(jobId);
+    if (found == jobs_.end()) return;
+    if (!found->second.threadId.empty()) jobsByThread_.erase(found->second.threadId);
+    jobs_.erase(found);
 }
 
 std::vector<CodexEvent> CodexBridge::PollEvents() {
@@ -440,6 +573,22 @@ std::vector<CodexEvent> CodexBridge::PollEvents() {
     std::vector<CodexEvent> output(events_.begin(), events_.end());
     events_.clear();
     return output;
+}
+
+std::optional<std::uint64_t> CodexBridge::FindJob(const nlohmann::json& params) const {
+    std::scoped_lock lock(stateMutex_);
+    const std::string threadId = params.value("threadId", "");
+    if (!threadId.empty()) {
+        const auto found = jobsByThread_.find(threadId);
+        if (found != jobsByThread_.end()) return found->second;
+    }
+    std::optional<std::uint64_t> onlyBusy;
+    for (const auto& [jobId, job] : jobs_) {
+        if (!job.busy) continue;
+        if (onlyBusy) return std::nullopt;
+        onlyBusy = jobId;
+    }
+    return onlyBusy;
 }
 
 nlohmann::json CodexBridge::SendRequest(const std::string& method, nlohmann::json params,
@@ -468,7 +617,9 @@ nlohmann::json CodexBridge::SendRequest(const std::string& method, nlohmann::jso
 }
 
 bool CodexBridge::SendLine(const nlohmann::json& message) {
-    const std::string line = message.dump() + "\n";
+    const std::string json = message.dump();
+    LogDiagnostic("CLIENT -> " + json);
+    const std::string line = json + "\n";
     std::scoped_lock lock(writeMutex_);
     DWORD written = 0;
     return childStdIn_ != nullptr &&
@@ -491,6 +642,7 @@ void CodexBridge::ReadLoop() {
             std::string line = pendingText.substr(0, newline);
             pendingText.erase(0, newline + 1);
             if (line.empty()) continue;
+            LogDiagnostic("SERVER <- " + line);
             try {
                 HandleMessage(nlohmann::json::parse(line));
             } catch (const std::exception& exception) {
@@ -500,9 +652,21 @@ void CodexBridge::ReadLoop() {
     }
     running_ = false;
     available_ = false;
-    if (busy_) {
-        busy_ = false;
-        PushEvent({CodexEventType::Error, "Codex App Server stopped during the operation."});
+    std::vector<std::uint64_t> interruptedJobs;
+    {
+        std::scoped_lock lock(stateMutex_);
+        for (auto& [jobId, job] : jobs_) {
+            if (job.busy) interruptedJobs.push_back(jobId);
+            job.busy = false;
+            job.operation = Operation::None;
+            job.activeTurnId.clear();
+        }
+    }
+    for (const auto jobId : interruptedJobs) {
+        CodexEvent event{CodexEventType::Error,
+                         "Codex App Server stopped during the operation."};
+        event.jobId = jobId;
+        PushEvent(std::move(event));
     }
 }
 
@@ -530,21 +694,39 @@ void CodexBridge::HandleMessage(const nlohmann::json& message) {
     }
     const std::string method = message.value("method", "");
     const nlohmann::json& params = message.value("params", nlohmann::json::object());
+    const auto jobId = FindJob(params);
+    if (!jobId) return;
+    Operation operation = Operation::None;
+    bool knownJob = false;
+    {
+        std::scoped_lock lock(stateMutex_);
+        const auto found = jobs_.find(*jobId);
+        if (found != jobs_.end()) {
+            knownJob = true;
+            operation = found->second.operation;
+        }
+    }
+    if (!knownJob) return;
+    const auto pushForJob = [this, jobId](CodexEvent event) {
+        event.jobId = *jobId;
+        PushEvent(std::move(event));
+    };
     if ((method == "item/started" || method == "item/completed") && params.contains("item")) {
         const auto& item = params["item"];
         const std::string type = item.value("type", "");
         if (type == "imageGeneration") {
-            PushEvent({CodexEventType::Progress, "ImageGen: " + item.value("status", "working")});
+            pushForJob({CodexEventType::Progress,
+                        "ImageGen: " + item.value("status", "working")});
             if (method == "item/completed" && item.contains("savedPath") &&
                 !item["savedPath"].is_null()) {
-                const auto copied = CopyGeneratedImage(
+                const auto copied = CopyGeneratedImage(*jobId,
                     PathFromUtf8(item["savedPath"].get<std::string>()));
                 if (!copied.empty()) {
-                    PushEvent({CodexEventType::GeneratedImage, "ImageGen completed.", copied});
+                    pushForJob({CodexEventType::GeneratedImage, "ImageGen completed.", copied});
                 }
             }
         } else if (type == "agentMessage" && method == "item/completed" &&
-                   operation_ == Operation::Mask) {
+                   operation == Operation::Mask) {
             try {
                 const auto parsed = nlohmann::json::parse(StripCodeFence(item.value("text", "")));
                 MaskProposal proposal;
@@ -552,25 +734,29 @@ void CodexBridge::HandleMessage(const nlohmann::json& message) {
                 if (PromptBuilder::ParseMaskProposal(parsed, proposal, error)) {
                     CodexEvent event{CodexEventType::MaskProposalReady, "Mask proposal completed."};
                     event.maskProposal = std::move(proposal);
-                    PushEvent(std::move(event));
+                    pushForJob(std::move(event));
                 } else {
-                    PushEvent({CodexEventType::Error, error});
+                    pushForJob({CodexEventType::Error, error});
                 }
             } catch (const std::exception& exception) {
-                PushEvent({CodexEventType::Error, std::string("Could not parse mask proposal: ") + exception.what()});
+                pushForJob({CodexEventType::Error,
+                            std::string("Could not parse mask proposal: ") + exception.what()});
             }
         }
     } else if (method == "turn/completed") {
-        busy_ = false;
         {
             std::scoped_lock lock(stateMutex_);
-            activeTurnId_.clear();
+            auto found = jobs_.find(*jobId);
+            if (found != jobs_.end()) {
+                found->second.busy = false;
+                found->second.activeTurnId.clear();
+                found->second.operation = Operation::None;
+            }
         }
-        operation_ = Operation::None;
         const auto& turn = params.value("turn", nlohmann::json::object());
         const std::string status = turn.value("status", "completed");
         if (status != "completed") {
-            PushEvent({CodexEventType::Error, "Codex turn ended with status: " + status});
+            pushForJob({CodexEventType::Error, "Codex turn ended with status: " + status});
         }
     }
 }
@@ -580,19 +766,41 @@ void CodexBridge::PushEvent(CodexEvent event) {
     events_.push_back(std::move(event));
 }
 
-std::filesystem::path CodexBridge::CopyGeneratedImage(const std::filesystem::path& source) {
+void CodexBridge::LogDiagnostic(const std::string_view message) {
+    std::scoped_lock lock(logMutex_);
+    if (diagnosticLogPath_.empty()) return;
+    HANDLE file = CreateFileW(diagnosticLogPath_.c_str(), FILE_APPEND_DATA,
+                              FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                              nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (file == INVALID_HANDLE_VALUE) return;
+    const std::string entry = "[" + LocalTimestamp() + "] " + std::string(message) + "\r\n";
+    DWORD written = 0;
+    WriteFile(file, entry.data(), static_cast<DWORD>(entry.size()), &written, nullptr);
+    CloseHandle(file);
+}
+
+std::filesystem::path CodexBridge::CopyGeneratedImage(const std::uint64_t jobId,
+                                                      const std::filesystem::path& source) {
     if (!std::filesystem::exists(source)) {
-        PushEvent({CodexEventType::Error, "ImageGen reported a path that does not exist."});
+        CodexEvent event{CodexEventType::Error,
+                         "ImageGen reported a path that does not exist."};
+        event.jobId = jobId;
+        PushEvent(std::move(event));
         return {};
     }
     const auto destination = sessionDirectory_ /
-        (L"imagegen-" + std::to_wstring(++generatedIndex_) + L".png");
+        (L"imagegen-" + std::to_wstring(jobId) + L"-" +
+         std::to_wstring(++generatedIndex_) + L".png");
     std::error_code error;
     std::filesystem::copy_file(source, destination, std::filesystem::copy_options::none, error);
     if (error) {
-        PushEvent({CodexEventType::Error, "Could not copy the generated image into the session directory."});
+        CodexEvent event{CodexEventType::Error,
+                         "Could not copy the generated image into the session directory."};
+        event.jobId = jobId;
+        PushEvent(std::move(event));
         return {};
     }
+    LogDiagnostic("Copied generated image to: " + PathUtf8(destination));
     return destination;
 }
 

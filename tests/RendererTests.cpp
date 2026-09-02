@@ -249,7 +249,13 @@ f 5/1 6/2 7/3 8/4
     camera.distance = 5;
     renderer.RenderViewport(256, 128, camera);
     codextex::TextureImage capture;
-    REQUIRE(renderer.CaptureFrame(camera, capture, error));
+    codextex::Renderer::ProjectionFrame savedFrame;
+    REQUIRE(renderer.CaptureFrame(camera, capture, savedFrame, error));
+    REQUIRE(savedFrame.Valid());
+    renderer.ClearFrozenFrame();
+    CHECK_FALSE(renderer.HasFrozenFrame());
+    renderer.ActivateProjectionFrame(savedFrame);
+    CHECK(renderer.HasFrozenFrame());
     REQUIRE(capture.Width() == 128);
     REQUIRE(capture.Height() == 128);
 
