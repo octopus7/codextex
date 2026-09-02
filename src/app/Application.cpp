@@ -66,19 +66,6 @@ std::filesystem::path GenerationArchiveDirectory() {
     return result;
 }
 
-std::string ElapsedLabel(const std::chrono::steady_clock::time_point startedAt,
-                         const std::string_view prefix) {
-    const auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(
-        std::chrono::steady_clock::now() - startedAt).count();
-    const auto minutes = elapsed / 60;
-    const auto seconds = elapsed % 60;
-    std::array<char, 64> label{};
-    std::snprintf(label.data(), label.size(), "%.*s %lld:%02lld",
-                  static_cast<int>(prefix.size()), prefix.data(),
-                  static_cast<long long>(minutes), static_cast<long long>(seconds));
-    return label.data();
-}
-
 std::string FileSizeLabel(const std::uintmax_t bytes) {
     constexpr double kib = 1024.0;
     constexpr double mib = kib * 1024.0;
@@ -709,8 +696,7 @@ void Application::DrawViewport() {
         for (auto& tab : projectionTabs_) {
             std::string visible = std::string(Tr("Projection")) + " " + std::to_string(tab.id);
             if (tab.generationStartedAt && codex_.IsBusy(tab.id)) {
-                const std::string elapsed = ElapsedLabel(*tab.generationStartedAt, Tr("Generating"));
-                visible += " (" + elapsed.substr(elapsed.find_last_of(' ') + 1) + ")";
+                visible += " (" + std::string(Tr("Generating")) + ")";
             }
             const std::string label = visible + "###ProjectionTab" + std::to_string(tab.id);
             bool open = true;
@@ -1189,11 +1175,19 @@ void Application::DrawTools() {
         ImGui::TextColored(ImVec4(0.45f, 0.85f, 1, 1),
                            Tr("Camera and visibility are locked for this tab"));
         if (codex_.IsBusy(tab->id)) {
-            const std::string elapsed = tab->generationStartedAt
-                ? ElapsedLabel(*tab->generationStartedAt, Tr("Generating")) : Tr("AI working");
-            ImGui::BeginDisabled();
-            ImGui::Button(elapsed.c_str());
-            ImGui::EndDisabled();
+            const double elapsedSeconds = tab->generationStartedAt
+                ? std::chrono::duration<double>(
+                    std::chrono::steady_clock::now() - *tab->generationStartedAt).count()
+                : 0.0;
+            const float progress = EstimateImageGenProgress(
+                elapsedSeconds, codexSettings_.lastImageGenDurationSeconds);
+            const ImGuiStyle& style = ImGui::GetStyle();
+            const float cancelWidth = ImGui::CalcTextSize(Tr("Cancel AI")).x +
+                style.FramePadding.x * 2.0f;
+            const float progressWidth = std::max(
+                1.0f, ImGui::GetContentRegionAvail().x -
+                cancelWidth - style.ItemSpacing.x);
+            ImGui::ProgressBar(progress, ImVec2(progressWidth, 0.0f), Tr("Generating"));
             ImGui::SameLine();
             if (ImGui::Button(Tr("Cancel AI"))) codex_.Cancel(tab->id);
         } else {
@@ -1912,6 +1906,26 @@ bool Application::SaveCodexSettingsForRequest() {
     return true;
 }
 
+void Application::RecordGenerationDuration(ProjectionTab& tab) {
+    if (!tab.generationStartedAt || tab.generationDurationRecorded) return;
+    const auto duration = std::chrono::duration_cast<std::chrono::seconds>(
+        std::chrono::steady_clock::now() - *tab.generationStartedAt).count();
+    codexSettings_.lastImageGenDurationSeconds = std::clamp<std::int64_t>(
+        std::max<std::int64_t>(duration, 1), 1, 24 * 60 * 60);
+    tab.generationDurationRecorded = true;
+
+    CodexRequestSettings settingsToSave = persistedSettings_;
+    settingsToSave.lastImageGenDurationSeconds = codexSettings_.lastImageGenDurationSeconds;
+    std::string error;
+    if (!SaveCodexRequestSettings(settingsPath_, settingsToSave, error)) {
+        settingsMessage_ = error;
+        return;
+    }
+    persistedSettings_ = std::move(settingsToSave);
+    settingsLoadedFromDisk_ = true;
+    settingsMessage_.clear();
+}
+
 void Application::NormalizeCodexSettings() {
     const auto& models = codex_.Models();
     if (models.empty()) return;
@@ -2208,6 +2222,7 @@ void Application::HandleCodexEvents() {
                 tab->statusIsError = true;
                 continue;
             }
+            RecordGenerationDuration(*tab);
 
             GenerationArchiveMetadata metadata;
             metadata.jobId = tab->id;

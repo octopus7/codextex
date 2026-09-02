@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <fstream>
 #include <system_error>
 
@@ -65,6 +66,17 @@ std::string FormatPromptHistoryAge(const std::int64_t lastUsedUnixSeconds,
     return std::to_string(elapsed / year) + "y";
 }
 
+float EstimateImageGenProgress(const double elapsedSeconds,
+                               const std::int64_t lastDurationSeconds) noexcept {
+    constexpr double defaultDurationSeconds = 300.0;
+    const double expected = lastDurationSeconds > 0
+        ? static_cast<double>(lastDurationSeconds) : defaultDurationSeconds;
+    const double ratio = std::max(elapsedSeconds, 0.0) / expected;
+    if (ratio <= 1.0) return static_cast<float>(ratio * 0.9);
+    const double overtime = 0.9 + 0.09 * (1.0 - std::exp(-(ratio - 1.0)));
+    return static_cast<float>(std::min(overtime, 0.99));
+}
+
 bool LoadCodexRequestSettings(const std::filesystem::path& path,
                               CodexRequestSettings& settings,
                               bool& loadedFromDisk,
@@ -117,6 +129,11 @@ bool LoadCodexRequestSettings(const std::filesystem::path& path,
         }
         if (const auto imageGen = document.find("imageGen");
             imageGen != document.end() && imageGen->is_object()) {
+            if (const auto duration = imageGen->find("lastDurationSeconds");
+                duration != imageGen->end() && duration->is_number_integer()) {
+                settings.lastImageGenDurationSeconds = std::clamp<std::int64_t>(
+                    duration->get<std::int64_t>(), 0, 24 * 60 * 60);
+            }
             if (const auto history = imageGen->find("promptHistory");
                 history != imageGen->end() && history->is_array()) {
                 const auto loadedAt = std::chrono::duration_cast<std::chrono::seconds>(
@@ -179,6 +196,10 @@ bool SaveCodexRequestSettings(const std::filesystem::path& path,
                     {"lastUsedUnixSeconds", entry.lastUsedUnixSeconds},
                 });
             }
+        }
+        if (settings.lastImageGenDurationSeconds > 0) {
+            document["imageGen"]["lastDurationSeconds"] =
+                settings.lastImageGenDurationSeconds;
         }
         std::ofstream stream(temporary, std::ios::binary | std::ios::trunc);
         if (!stream) {

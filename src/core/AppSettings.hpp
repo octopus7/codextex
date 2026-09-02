@@ -26,6 +26,8 @@ struct CodexRequestSettings {
     std::filesystem::path recentObjPath;
     std::filesystem::path recentTexturePath;
     std::vector<ImageGenPromptHistoryEntry> imageGenPromptHistory;
+    // Zero means no successful ImageGen duration has been observed yet.
+    std::int64_t lastImageGenDurationSeconds{};
 };
 
 [[nodiscard]] bool HasRecentPrimaryAssetPair(
@@ -38,6 +40,9 @@ void AddImageGenPromptToHistory(CodexRequestSettings& settings,
 [[nodiscard]] std::string FormatPromptHistoryAge(
     std::int64_t lastUsedUnixSeconds,
     std::int64_t nowUnixSeconds);
+[[nodiscard]] float EstimateImageGenProgress(
+    double elapsedSeconds,
+    std::int64_t lastDurationSeconds) noexcept;
 
 bool LoadCodexRequestSettings(const std::filesystem::path& path,
                               CodexRequestSettings& settings,

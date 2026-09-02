@@ -60,6 +60,7 @@ private:
     bool SaveTexture(bool choosePath);
     bool CreateProjectionTab(bool generate);
     bool SaveCodexSettingsForRequest();
+    void RecordGenerationDuration(ProjectionTab& tab);
     bool DeletePromptHistoryEntry(std::size_t index);
     void CleanupProjectionTemp(ProjectionTab& tab);
     bool SelectUiLanguage(UiLanguage language);
@@ -143,6 +144,7 @@ private:
         LocalSideFilter localSideFilter{LocalSideFilter::Both};
         std::uint64_t baseTextureRevision{};
         std::optional<std::chrono::steady_clock::time_point> generationStartedAt;
+        bool generationDurationRecorded{};
     };
     std::vector<ProjectionTab> projectionTabs_;
     std::optional<std::uint64_t> workingPreviewProjectionId_;

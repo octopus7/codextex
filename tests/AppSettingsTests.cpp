@@ -1,5 +1,6 @@
 #include "core/AppSettings.hpp"
 
+#include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 #include <Windows.h>
 
@@ -28,6 +29,7 @@ TEST_CASE("Missing app settings use Sol medium without creating a file") {
     CHECK(settings.model == "gpt-5.6-sol");
     CHECK(settings.reasoningEffort == "medium");
     CHECK(settings.language.empty());
+    CHECK(settings.lastImageGenDurationSeconds == 0);
     CHECK_FALSE(std::filesystem::exists(path));
 }
 
@@ -41,6 +43,7 @@ TEST_CASE("App settings persist beside the requested binary path") {
         {"은발 양갈래 메이드", 1'725'000'000},
         {"weathered brass armor", 1'724'000'000},
     };
+    written.lastImageGenDurationSeconds = 247;
     std::string error;
     REQUIRE(codextex::SaveCodexRequestSettings(path, written, error));
 
@@ -55,6 +58,17 @@ TEST_CASE("App settings persist beside the requested binary path") {
     CHECK(loadedSettings.recentTexturePath == written.recentTexturePath);
     CHECK(codextex::HasRecentPrimaryAssetPair(loadedSettings));
     CHECK(loadedSettings.imageGenPromptHistory == written.imageGenPromptHistory);
+    CHECK(loadedSettings.lastImageGenDurationSeconds == 247);
+}
+
+TEST_CASE("ImageGen progress uses the latest successful duration without reaching completion") {
+    CHECK(codextex::EstimateImageGenProgress(0.0, 100) == 0.0f);
+    CHECK(codextex::EstimateImageGenProgress(50.0, 100) == Catch::Approx(0.45f));
+    CHECK(codextex::EstimateImageGenProgress(100.0, 100) == Catch::Approx(0.9f));
+    CHECK(codextex::EstimateImageGenProgress(200.0, 100) > 0.9f);
+    CHECK(codextex::EstimateImageGenProgress(200.0, 100) < 0.99f);
+    CHECK(codextex::EstimateImageGenProgress(100000.0, 100) <= 0.99f);
+    CHECK(codextex::EstimateImageGenProgress(150.0, 0) == Catch::Approx(0.45f));
 }
 
 TEST_CASE("ImageGen prompt history is unique newest first and bounded") {
@@ -146,4 +160,5 @@ TEST_CASE("Legacy app settings without a UI language remain loadable") {
     REQUIRE(codextex::LoadCodexRequestSettings(path, loadedSettings, loaded, error));
     CHECK(loaded);
     CHECK(loadedSettings.language.empty());
+    CHECK(loadedSettings.lastImageGenDurationSeconds == 0);
 }
