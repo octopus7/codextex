@@ -137,6 +137,33 @@ bool SupportsEffort(const CodexModelInfo& model, const std::string& effort) {
         [&effort](const CodexReasoningOption& option) { return option.value == effort; });
 }
 
+void SectionHeaderWithHelp(const char* id, const char* title, const char* help) {
+    ImGui::Separator();
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextUnformatted(title);
+    ImGui::SameLine(0.0f, ImGui::GetStyle().ItemInnerSpacing.x);
+
+    ImGui::PushID(id);
+    const float side = ImGui::GetFrameHeight();
+    const ImVec2 position = ImGui::GetCursorScreenPos();
+    ImGui::InvisibleButton("##SectionHelp", ImVec2(side, side));
+    const bool hovered = ImGui::IsItemHovered();
+    const ImU32 color = ImGui::GetColorU32(hovered ? ImGuiCol_Text : ImGuiCol_TextDisabled);
+    const ImVec2 center(position.x + side * 0.5f, position.y + side * 0.5f);
+    ImGui::GetWindowDrawList()->AddCircle(center, side * 0.34f, color, 20, 1.5f);
+    const ImVec2 textSize = ImGui::CalcTextSize("i");
+    ImGui::GetWindowDrawList()->AddText(
+        ImVec2(center.x - textSize.x * 0.5f, center.y - textSize.y * 0.5f), color, "i");
+    if (hovered) {
+        ImGui::BeginTooltip();
+        ImGui::PushTextWrapPos(ImGui::GetFontSize() * 32.0f);
+        ImGui::TextUnformatted(help);
+        ImGui::PopTextWrapPos();
+        ImGui::EndTooltip();
+    }
+    ImGui::PopID();
+}
+
 bool LoadUiFont(ImGuiIO& io, const float dpiScale, const UiLanguage language) {
     std::array<wchar_t, MAX_PATH> windowsDirectory{};
     const UINT length = GetWindowsDirectoryW(windowsDirectory.data(),
@@ -859,7 +886,9 @@ void Application::DrawTools() {
         ImGui::TextWrapped(Tr("Shared or mirrored UVs may let the opposite local-X side overwrite the bake."));
     }
 
-    ImGui::SeparatorText(Tr("ImageGen reference sets"));
+    SectionHeaderWithHelp(
+        "ImageGenReferenceSets", Tr("ImageGen reference sets"),
+        Tr("Reference sets are viewport/ImageGen context only. Toggle them off manually while projection painting if desired."));
     if (ImGui::Button(Tr("Add reference OBJ + PNG"))) AddReferenceAsset();
     ImGui::SameLine();
     ImGui::BeginDisabled(referenceAssets_.empty());
@@ -869,7 +898,6 @@ void Application::DrawTools() {
         renderer_.SetReferenceAssetsVisible(showReferences);
     }
     ImGui::EndDisabled();
-    ImGui::TextWrapped(Tr("Reference sets are viewport/ImageGen context only. Toggle them off manually while projection painting if desired."));
     std::optional<std::size_t> removeReference;
     for (std::size_t i = 0; i < referenceAssets_.size(); ++i) {
         ImGui::PushID(static_cast<int>(i));
@@ -890,7 +918,9 @@ void Application::DrawTools() {
     renderer_.SetReferenceAssetsVisible(
         tab == nullptr ? referenceAssetsVisible_ : tab->referenceAssetsVisible);
 
-    ImGui::SeparatorText(Tr("Viewport display"));
+    SectionHeaderWithHelp(
+        "ViewportDisplay", Tr("Viewport display"),
+        Tr("Shading is off by default; Base Color is shown unchanged."));
     if (ImGui::Checkbox(Tr("Neutral shading"), &shadingEnabled_)) {
         renderer_.SetShadingEnabled(shadingEnabled_);
     }
@@ -903,8 +933,6 @@ void Application::DrawTools() {
                               ImGuiColorEditFlags_PickerHueWheel)) {
         renderer_.SetViewportBackgroundColor(viewportBackgroundColor_);
     }
-    ImGui::TextDisabled(Tr("Shading is off by default; Base Color is shown unchanged."));
-
     if (tab == nullptr) {
         ImGui::SeparatorText(Tr("Main viewport mode"));
         if (ImGui::RadioButton(Tr("Navigate"), editMode_ == EditMode::Navigate)) editMode_ = EditMode::Navigate;
