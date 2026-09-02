@@ -639,14 +639,16 @@ void Application::DrawViewport() {
                               color, Tr("ImageGen 1:1 crop"));
             }
 
-            const char* originalLabel = Tr("Original texture");
+            const char* workingLabel = Tr("Working");
+            const char* originalLabel = Tr("Original");
             const ImGuiStyle& style = ImGui::GetStyle();
             const float padding = 9.0f * dpiScale_;
-            const ImVec2 textSize = ImGui::CalcTextSize(originalLabel);
-            const float checkboxSize = ImGui::GetFrameHeight();
-            const ImVec2 panelSize{padding * 2.0f + checkboxSize + style.ItemInnerSpacing.x +
-                                       textSize.x,
-                                   padding * 2.0f + checkboxSize};
+            const float rowHeight = ImGui::GetFrameHeight();
+            const float labelWidth = std::max(ImGui::CalcTextSize(workingLabel).x,
+                                              ImGui::CalcTextSize(originalLabel).x);
+            const ImVec2 panelSize{padding * 2.0f + rowHeight + style.ItemInnerSpacing.x +
+                                       labelWidth,
+                                   padding * 2.0f + rowHeight * 2.0f + style.ItemSpacing.y};
             const ImVec2 panelMin{topLeft.x + available.x - panelSize.x - 12.0f * dpiScale_,
                                   topLeft.y + 12.0f * dpiScale_};
             const ImVec2 panelMax{panelMin.x + panelSize.x, panelMin.y + panelSize.y};
@@ -656,9 +658,11 @@ void Application::DrawViewport() {
             overlay->AddRect(panelMin, panelMax, IM_COL32(105, 125, 145, 210),
                              9.0f * dpiScale_, 0, 1.0f * dpiScale_);
             ImGui::SetCursorScreenPos({panelMin.x + padding, panelMin.y + padding});
-            if (ImGui::Checkbox(originalLabel, &mainOriginalTexturePreview_)) {
-                renderer_.SetOriginalTexturePreview(mainOriginalTexturePreview_);
-            }
+            if (ImGui::RadioButton(workingLabel, !mainOriginalTexturePreview_))
+                mainOriginalTexturePreview_ = false;
+            if (ImGui::RadioButton(originalLabel, mainOriginalTexturePreview_))
+                mainOriginalTexturePreview_ = true;
+            renderer_.SetOriginalTexturePreview(mainOriginalTexturePreview_);
             const ImVec2 mouse = ImGui::GetIO().MousePos;
             const bool panelHovered = mouse.x >= panelMin.x && mouse.y >= panelMin.y &&
                 mouse.x <= panelMax.x && mouse.y <= panelMax.y;
@@ -700,6 +704,16 @@ void Application::DrawViewport() {
                 if (!tab.projectionLoaded && tab.viewMode == ProjectionViewMode::GeneratedFull) {
                     tab.viewMode = ProjectionViewMode::Working;
                 }
+                if (ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows) &&
+                    !ImGui::GetIO().WantTextInput) {
+                    if (ImGui::IsKeyPressed(ImGuiKey_1)) {
+                        tab.viewMode = ProjectionViewMode::Working;
+                    } else if (ImGui::IsKeyPressed(ImGuiKey_2) && tab.projectionLoaded) {
+                        tab.viewMode = ProjectionViewMode::GeneratedFull;
+                    } else if (ImGui::IsKeyPressed(ImGuiKey_3)) {
+                        tab.viewMode = ProjectionViewMode::Original;
+                    }
+                }
                 const bool showOriginal = tab.viewMode == ProjectionViewMode::Original;
                 ProjectionPreviewMode previewMode = ProjectionPreviewMode::Disabled;
                 if (tab.projectionLoaded && tab.viewMode == ProjectionViewMode::GeneratedFull) {
@@ -710,25 +724,33 @@ void Application::DrawViewport() {
                 }
                 renderer_.SetOriginalTexturePreview(showOriginal);
                 renderer_.SetProjectionPreviewMode(previewMode);
+                const float maskWidth = static_cast<float>(std::max(tab.mask.Width(), 1u));
+                const float maskHeight = static_cast<float>(std::max(tab.mask.Height(), 1u));
+                renderer_.SetProjectionOffset(tab.projectionOffsetPixels.x / maskWidth,
+                                              tab.projectionOffsetPixels.y / maskHeight);
                 renderer_.RenderViewport(static_cast<std::uint32_t>(drawSize.x),
                                          static_cast<std::uint32_t>(drawSize.y), tab.camera);
+                const Vec2 displayUvMin = tab.displayTransform.MinimumUv();
+                const Vec2 displayUvMax = tab.displayTransform.MaximumUv();
                 ImGui::Image(reinterpret_cast<ImTextureID>(renderer_.ViewportTexture()),
-                             ImVec2(drawSize.x, drawSize.y));
+                             ImVec2(drawSize.x, drawSize.y),
+                             ImVec2(displayUvMin.x, displayUvMin.y),
+                             ImVec2(displayUvMax.x, displayUvMax.y));
                 bool viewportHovered = ImGui::IsItemHovered();
 
-                const char* workingLabel = Tr("Working");
-                const char* originalLabel = Tr("Original");
-                const char* generatedLabel = Tr("Generated Image");
+                const std::string workingLabel = "1  " + std::string(Tr("Working"));
+                const std::string generatedLabel = "2  " + std::string(Tr("Generated Image"));
+                const std::string originalLabel = "3  " + std::string(Tr("Original"));
                 const ImGuiStyle& style = ImGui::GetStyle();
                 const float padding = 9.0f * dpiScale_;
-                const float radioSize = ImGui::GetFrameHeight();
-                const float labelsWidth = ImGui::CalcTextSize(workingLabel).x +
-                    ImGui::CalcTextSize(originalLabel).x + ImGui::CalcTextSize(generatedLabel).x;
-                const float spacingWidth = style.ItemInnerSpacing.x * 3.0f +
-                    style.ItemSpacing.x * 2.0f;
-                const ImVec2 panelSize{padding * 2.0f + radioSize * 3.0f + labelsWidth +
-                                           spacingWidth,
-                                       padding * 2.0f + radioSize};
+                const float rowHeight = ImGui::GetFrameHeight();
+                const float labelWidth = std::max({ImGui::CalcTextSize(workingLabel.c_str()).x,
+                                                   ImGui::CalcTextSize(generatedLabel.c_str()).x,
+                                                   ImGui::CalcTextSize(originalLabel.c_str()).x});
+                const ImVec2 panelSize{padding * 2.0f + rowHeight + style.ItemInnerSpacing.x +
+                                           labelWidth,
+                                       padding * 2.0f + rowHeight * 3.0f +
+                                           style.ItemSpacing.y * 2.0f};
                 const ImVec2 panelMin{topLeft.x + drawSize.x - panelSize.x - 12.0f * dpiScale_,
                                       topLeft.y + 12.0f * dpiScale_};
                 const ImVec2 panelMax{panelMin.x + panelSize.x, panelMin.y + panelSize.y};
@@ -739,22 +761,20 @@ void Application::DrawViewport() {
                                  9.0f * dpiScale_, 0, 1.0f * dpiScale_);
                 ImGui::SetCursorScreenPos({panelMin.x + padding, panelMin.y + padding});
                 int selectedMode = static_cast<int>(tab.viewMode);
-                if (ImGui::RadioButton(workingLabel, selectedMode ==
+                if (ImGui::RadioButton(workingLabel.c_str(), selectedMode ==
                                       static_cast<int>(ProjectionViewMode::Working))) {
                     tab.viewMode = ProjectionViewMode::Working;
                 }
-                ImGui::SameLine();
-                if (ImGui::RadioButton(originalLabel, selectedMode ==
-                                      static_cast<int>(ProjectionViewMode::Original))) {
-                    tab.viewMode = ProjectionViewMode::Original;
-                }
-                ImGui::SameLine();
                 ImGui::BeginDisabled(!tab.projectionLoaded);
-                if (ImGui::RadioButton(generatedLabel, selectedMode ==
+                if (ImGui::RadioButton(generatedLabel.c_str(), selectedMode ==
                                       static_cast<int>(ProjectionViewMode::GeneratedFull))) {
                     tab.viewMode = ProjectionViewMode::GeneratedFull;
                 }
                 ImGui::EndDisabled();
+                if (ImGui::RadioButton(originalLabel.c_str(), selectedMode ==
+                                      static_cast<int>(ProjectionViewMode::Original))) {
+                    tab.viewMode = ProjectionViewMode::Original;
+                }
                 const ImVec2 mouse = ImGui::GetIO().MousePos;
                 const bool panelHovered = mouse.x >= panelMin.x && mouse.y >= panelMin.y &&
                     mouse.x <= panelMax.x && mouse.y <= panelMax.y;
@@ -763,8 +783,7 @@ void Application::DrawViewport() {
                     lassoActive_ = false;
                     lassoPoints_.clear();
                 }
-                viewportHovered = viewportHovered && !panelHovered &&
-                    tab.viewMode == ProjectionViewMode::Working;
+                viewportHovered = viewportHovered && !panelHovered;
                 ImGui::SetCursorScreenPos(afterCanvas);
                 HandleViewportInput({topLeft.x, topLeft.y}, drawSize, &tab, viewportHovered);
                 drawLasso(topLeft);
@@ -774,8 +793,11 @@ void Application::DrawViewport() {
                 const ImVec2 maximum{minimum.x + crop.side, minimum.y + crop.side};
                 ImDrawList* draw = ImGui::GetWindowDrawList();
                 draw->AddRect(minimum, maximum, color, 0.0f, 0, 2.0f * dpiScale_);
+                std::array<char, 128> cropLabel{};
+                std::snprintf(cropLabel.data(), cropLabel.size(), "%s  %.0f%%",
+                              Tr("Locked projection crop"), tab.displayTransform.zoom * 100.0f);
                 draw->AddText(ImVec2(minimum.x + 6.0f * dpiScale_, minimum.y + 5.0f * dpiScale_),
-                              color, Tr("Locked projection crop"));
+                              color, cropLabel.data());
                 const Vec2 localMouse{mouse.x - topLeft.x, mouse.y - topLeft.y};
                 const bool brushAvailable = tab.projectionLoaded && !tab.applied &&
                     !codex_.IsBusy(tab.id) && !useLasso_ &&
@@ -787,13 +809,14 @@ void Application::DrawViewport() {
                         ? IM_COL32(255, 85, 85, 235)
                         : IM_COL32(70, 220, 255, 235);
                     draw->PushClipRect(minimum, maximum, true);
-                    draw->AddCircleFilled(mouse, tab.brushRadius,
+                    const float displayBrushRadius = tab.brushRadius * tab.displayTransform.zoom;
+                    draw->AddCircleFilled(mouse, displayBrushRadius,
                                           erasing ? IM_COL32(255, 70, 70, 35)
                                                   : IM_COL32(70, 220, 255, 35),
                                           48);
-                    draw->AddCircle(mouse, tab.brushRadius, IM_COL32(0, 0, 0, 230),
+                    draw->AddCircle(mouse, displayBrushRadius, IM_COL32(0, 0, 0, 230),
                                     48, 4.0f * dpiScale_);
-                    draw->AddCircle(mouse, tab.brushRadius, brushColor,
+                    draw->AddCircle(mouse, displayBrushRadius, brushColor,
                                     48, 2.0f * dpiScale_);
                     const float cross = 4.0f * dpiScale_;
                     draw->AddLine({mouse.x - cross, mouse.y}, {mouse.x + cross, mouse.y},
@@ -816,6 +839,35 @@ void Application::HandleViewportInput(const Vec2& topLeft, const Vec2& size, Pro
                                       const bool hovered) {
     const ImGuiIO& io = ImGui::GetIO();
     const Vec2 local{io.MousePos.x - topLeft.x, io.MousePos.y - topLeft.y};
+    if (hovered && tab != nullptr) {
+        const Vec2 anchor{
+            std::clamp(local.x / std::max(size.x, 1.0f), 0.0f, 1.0f),
+            std::clamp(local.y / std::max(size.y, 1.0f), 0.0f, 1.0f)};
+        if (io.MouseWheel != 0.0f) {
+            tab->displayTransform.ZoomAt(
+                tab->displayTransform.zoom * std::pow(1.15f, io.MouseWheel), anchor);
+        }
+        if (ImGui::IsMouseDragging(ImGuiMouseButton_Middle)) {
+            if (io.KeyShift && tab->projectionLoaded) {
+                tab->projectionOffsetPixels.x += io.MouseDelta.x /
+                    (std::max(size.x, 1.0f) * tab->displayTransform.zoom) * tab->mask.Width();
+                tab->projectionOffsetPixels.y += io.MouseDelta.y /
+                    (std::max(size.y, 1.0f) * tab->displayTransform.zoom) * tab->mask.Height();
+                tab->projectionOffsetPixels.x = std::clamp(
+                    tab->projectionOffsetPixels.x,
+                    -static_cast<float>(tab->mask.Width()),
+                    static_cast<float>(tab->mask.Width()));
+                tab->projectionOffsetPixels.y = std::clamp(
+                    tab->projectionOffsetPixels.y,
+                    -static_cast<float>(tab->mask.Height()),
+                    static_cast<float>(tab->mask.Height()));
+            } else if (tab->displayTransform.zoom > ProjectionViewTransform::MinimumZoom) {
+                tab->displayTransform.PanByViewDelta(
+                    {io.MouseDelta.x / std::max(size.x, 1.0f),
+                     io.MouseDelta.y / std::max(size.y, 1.0f)});
+            }
+        }
+    }
     if (hovered && tab == nullptr && editMode_ == EditMode::Navigate) {
         if (ImGui::IsMouseDragging(ImGuiMouseButton_Right)) {
             camera_.yaw += io.MouseDelta.x * 0.008f;
@@ -859,18 +911,23 @@ void Application::HandleViewportInput(const Vec2& topLeft, const Vec2& size, Pro
                 lassoActive_ = false;
             }
         }
-    } else if (tab != nullptr && tab->projectionLoaded && !tab->applied &&
+    } else if (tab != nullptr && tab->viewMode == ProjectionViewMode::Working &&
+               tab->projectionLoaded && !tab->applied &&
                !codex_.IsBusy(tab->id) && tab->mask.Width() != 0 && tab->mask.Height() != 0) {
-        const SquareCropFrame crop = CenteredSquare(size);
-        const Vec2 cropLocal{local.x - crop.origin.x, local.y - crop.origin.y};
-        const bool insideCrop = crop.Contains(local);
-        const float maskScale = static_cast<float>(tab->mask.Width()) / crop.side;
+        const bool insideCrop = local.x >= 0.0f && local.y >= 0.0f &&
+            local.x <= size.x && local.y <= size.y;
+        const Vec2 viewUv{local.x / std::max(size.x, 1.0f),
+                          local.y / std::max(size.y, 1.0f)};
+        const Vec2 sourceUv = tab->displayTransform.ViewToSource(viewUv);
+        const float maskScale = static_cast<float>(tab->mask.Width()) /
+            std::max(size.x, 1.0f);
         if (!useLasso_) {
             const bool painting = ImGui::IsMouseDown(ImGuiMouseButton_Left) ||
                                   ImGui::IsMouseDown(ImGuiMouseButton_Right);
             if (painting && insideCrop) {
                 const bool include = ImGui::IsMouseDown(ImGuiMouseButton_Left);
-                tab->mask.PaintCircle(cropLocal.x * maskScale, cropLocal.y * maskScale,
+                tab->mask.PaintCircle(sourceUv.x * tab->mask.Width(),
+                                      sourceUv.y * tab->mask.Height(),
                                       tab->brushRadius * maskScale, include);
                 ApplyMaskChange(*tab);
             }
@@ -884,8 +941,12 @@ void Application::HandleViewportInput(const Vec2& topLeft, const Vec2& size, Pro
                 std::vector<Vec2> maskPoints;
                 maskPoints.reserve(lassoPoints_.size());
                 for (const Vec2 point : lassoPoints_) {
-                    maskPoints.push_back({(point.x - crop.origin.x) * maskScale,
-                                          (point.y - crop.origin.y) * maskScale});
+                    const Vec2 pointViewUv{
+                        point.x / std::max(size.x, 1.0f),
+                        point.y / std::max(size.y, 1.0f)};
+                    const Vec2 pointSourceUv = tab->displayTransform.ViewToSource(pointViewUv);
+                    maskPoints.push_back({pointSourceUv.x * tab->mask.Width(),
+                                          pointSourceUv.y * tab->mask.Height()});
                 }
                 tab->mask.ApplyLasso(maskPoints, maskInclude_);
                 ApplyMaskChange(*tab);
@@ -1106,13 +1167,28 @@ void Application::DrawTools() {
             ImGui::Text(Tr("Projection: %s"), Narrow(tab->projectionPath.filename()).c_str());
         }
 
-        ImGui::SeparatorText(Tr("Mask and bake"));
+        SectionHeaderWithHelp(
+            "MaskAndBakeHelp", Tr("Mask and bake"),
+            Tr("Wheel zooms the locked view. Middle-drag pans it; Shift+middle-drag shifts the generated image."));
         ImGui::BeginDisabled(!tab->projectionLoaded || codex_.IsBusy(tab->id) || tab->applied);
         ImGui::Checkbox(Tr("Lasso"), &useLasso_);
         if (!useLasso_) ImGui::SliderFloat(Tr("Brush radius"), &tab->brushRadius, 2.0f, 160.0f, "%.0f px");
         if (useLasso_) ImGui::Checkbox(Tr("Lasso includes area"), &maskInclude_);
         if (ImGui::SliderInt(Tr("Inward feather"), &tab->featherRadius, 0, 128, "%d px")) {
             ApplyMaskChange(*tab);
+        }
+        float projectionOffset[]{tab->projectionOffsetPixels.x, tab->projectionOffsetPixels.y};
+        const float shiftLimit = static_cast<float>(std::max(tab->mask.Width(), 1u));
+        if (ImGui::DragFloat2(Tr("Projection shift"), projectionOffset, 1.0f,
+                              -shiftLimit, shiftLimit, "%.0f px")) {
+            tab->projectionOffsetPixels = {projectionOffset[0], projectionOffset[1]};
+            renderer_.SetProjectionOffset(tab->projectionOffsetPixels.x / shiftLimit,
+                                          tab->projectionOffsetPixels.y / shiftLimit);
+        }
+        ImGui::SameLine();
+        if (ImGui::Button(Tr("Reset shift"))) {
+            tab->projectionOffsetPixels = {};
+            renderer_.SetProjectionOffset(0.0f, 0.0f);
         }
         if (ImGui::Button(Tr("Clear mask"))) {
             tab->mask.Clear(false);
@@ -1819,6 +1895,8 @@ Application::ProjectionTab* Application::ActiveProjectionTab() {
 }
 
 void Application::ActivateMainViewport() {
+    renderer_.SetOriginalTexturePreview(mainOriginalTexturePreview_);
+    renderer_.SetProjectionOffset(0.0f, 0.0f);
     if (!activeProjectionId_ && !rendererProjectionId_) return;
     activeProjectionId_.reset();
     rendererProjectionId_.reset();
@@ -1834,6 +1912,11 @@ void Application::ActivateMainViewport() {
 
 void Application::ActivateProjectionTab(ProjectionTab& tab) {
     activeProjectionId_ = tab.id;
+    renderer_.SetOriginalTexturePreview(tab.viewMode == ProjectionViewMode::Original);
+    const float maskWidth = static_cast<float>(std::max(tab.mask.Width(), 1u));
+    const float maskHeight = static_cast<float>(std::max(tab.mask.Height(), 1u));
+    renderer_.SetProjectionOffset(tab.projectionOffsetPixels.x / maskWidth,
+                                  tab.projectionOffsetPixels.y / maskHeight);
     if (rendererProjectionId_ == tab.id) return;
     rendererProjectionId_ = tab.id;
     renderer_.ActivateProjectionFrame(tab.frame);

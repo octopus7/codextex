@@ -4,6 +4,7 @@
 #include "core/AppSettings.hpp"
 #include "core/Localization.hpp"
 #include "core/Mask.hpp"
+#include "core/ProjectionViewTransform.hpp"
 #include "core/Mesh.hpp"
 #include "core/TextureImage.hpp"
 #include "graphics/Renderer.hpp"
@@ -32,7 +33,7 @@ public:
 
 private:
     enum class EditMode { Navigate, Face };
-    enum class ProjectionViewMode { Working, Original, GeneratedFull };
+    enum class ProjectionViewMode { Working, GeneratedFull, Original };
 
     void DrawUi();
     void DrawMenuBar();
@@ -133,6 +134,8 @@ private:
         std::vector<std::pair<std::filesystem::path, std::filesystem::path>> referencePaths;
         bool applied{};
         ProjectionViewMode viewMode{ProjectionViewMode::Working};
+        ProjectionViewTransform displayTransform{};
+        Vec2 projectionOffsetPixels{};
         float brushRadius{28.0f};
         int featherRadius{16};
         float maxAngleDegrees{75.0f};
