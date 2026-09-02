@@ -1,6 +1,7 @@
 #pragma once
 
 #include "codex/CodexBridge.hpp"
+#include "core/AppSettings.hpp"
 #include "core/Mask.hpp"
 #include "core/Mesh.hpp"
 #include "core/TextureImage.hpp"
@@ -50,6 +51,8 @@ private:
     bool RebuildReferenceAssets();
     bool SaveTexture(bool choosePath);
     bool CreateProjectionTab(bool generate);
+    bool SaveCodexSettingsForRequest();
+    void NormalizeCodexSettings();
     void CloseProjectionTab(std::uint64_t id);
     void ClearProjectionTabs();
     ProjectionTab* ActiveProjectionTab();
@@ -101,6 +104,8 @@ private:
         std::filesystem::path capturePath;
         std::filesystem::path projectionPath;
         std::string status = "Waiting for projection image.";
+        std::string model;
+        std::string reasoningEffort;
         bool statusIsError{};
         bool projectionLoaded{};
         bool referenceAssetsVisible{true};
@@ -127,6 +132,11 @@ private:
     std::filesystem::path sessionDirectory_;
     std::filesystem::path texturePath_;
     std::filesystem::path imageGenLogPath_;
+    std::filesystem::path settingsPath_;
+    CodexRequestSettings codexSettings_;
+    bool settingsLoadedFromDisk_{};
+    bool settingsChanged_{};
+    std::string settingsMessage_;
     bool meshLoaded_{};
     bool textureLoaded_{};
     bool dirty_{};

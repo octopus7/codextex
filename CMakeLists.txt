@@ -17,6 +17,7 @@ find_package(nlohmann_json CONFIG REQUIRED)
 find_package(tinyobjloader CONFIG REQUIRED)
 
 add_library(codextex_core
+  src/core/AppSettings.cpp
   src/core/Mesh.cpp
   src/core/TextureImage.cpp
   src/core/Mask.cpp
@@ -68,6 +69,7 @@ if(CODEXTEX_BUILD_TESTS)
   add_executable(codextex_tests
     src/codex/CodexBridge.cpp
     src/graphics/Renderer.cpp
+    tests/AppSettingsTests.cpp
     tests/CodexBridgeTests.cpp
     tests/MeshTests.cpp
     tests/MaskTests.cpp

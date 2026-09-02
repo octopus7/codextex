@@ -150,6 +150,16 @@ std::string LocalTimestamp() {
     return buffer.data();
 }
 
+std::vector<CodexModelInfo> FallbackModels() {
+    return {{"gpt-5.6-sol", "GPT-5.6-Sol", "medium",
+             {{"low", "Fast reasoning"},
+              {"medium", "Balanced reasoning"},
+              {"high", "Deeper reasoning"},
+              {"xhigh", "Very deep reasoning"},
+              {"max", "Maximum reasoning"},
+              {"ultra", "Ultra reasoning"}}}};
+}
+
 } // namespace
 
 CodexBridge::~CodexBridge() {
@@ -179,6 +189,7 @@ bool CodexBridge::EnableDiagnosticLog(const std::filesystem::path& logPath) {
 bool CodexBridge::Start(const std::filesystem::path& sessionDirectory,
                         const std::filesystem::path& executableOverride) {
     Stop();
+    models_ = FallbackModels();
     sessionDirectory_ = sessionDirectory;
     executableOverride_ = executableOverride;
     LogDiagnostic("Starting Codex bridge. Session directory: " + PathUtf8(sessionDirectory_));
@@ -351,6 +362,36 @@ bool CodexBridge::InitializeProtocol() {
             return true;
         }
 
+        try {
+            const auto modelsResult = SendRequest(
+                "model/list", {{"limit", 100}, {"includeHidden", false}});
+            std::vector<CodexModelInfo> advertisedModels;
+            if (modelsResult.contains("data") && modelsResult["data"].is_array()) {
+                for (const auto& model : modelsResult["data"]) {
+                    CodexModelInfo info;
+                    info.id = model.value("model", model.value("id", ""));
+                    info.displayName = model.value("displayName", info.id);
+                    info.defaultReasoningEffort = model.value("defaultReasoningEffort", "medium");
+                    if (model.contains("supportedReasoningEfforts") &&
+                        model["supportedReasoningEfforts"].is_array()) {
+                        for (const auto& option : model["supportedReasoningEfforts"]) {
+                            const std::string value = option.value("reasoningEffort", "");
+                            if (!value.empty()) {
+                                info.supportedReasoningEfforts.push_back(
+                                    {value, option.value("description", "")});
+                            }
+                        }
+                    }
+                    if (!info.id.empty() && !info.supportedReasoningEfforts.empty()) {
+                        advertisedModels.push_back(std::move(info));
+                    }
+                }
+            }
+            if (!advertisedModels.empty()) models_ = std::move(advertisedModels);
+        } catch (const std::exception& exception) {
+            LogDiagnostic(std::string("model/list unavailable; using built-in fallback: ") +
+                          exception.what());
+        }
         const auto skillsResult = SendRequest(
             "skills/list", {{"cwds", {PathUtf8(sessionDirectory_)}}, {"forceReload", true}});
         if (skillsResult.contains("data")) {
@@ -391,17 +432,18 @@ bool CodexBridge::IsBusy(const std::uint64_t jobId) const noexcept {
     return found != jobs_.end() && found->second.busy;
 }
 
-bool CodexBridge::EnsureThread(const std::uint64_t jobId) {
+bool CodexBridge::EnsureThread(const std::uint64_t jobId, const std::string& model) {
     {
         std::scoped_lock lock(stateMutex_);
         const auto found = jobs_.find(jobId);
         if (found != jobs_.end() && !found->second.threadId.empty()) return true;
     }
     try {
-        const auto startThread = [this](const char* sandbox) {
+        const auto startThread = [this, &model](const char* sandbox) {
             return SendRequest(
                 "thread/start",
                 {{"cwd", PathUtf8(sessionDirectory_)},
+                 {"model", model},
                  {"approvalPolicy", "never"},
                  {"sandbox", sandbox},
                  {"ephemeral", true},
@@ -439,12 +481,14 @@ bool CodexBridge::EnsureThread(const std::uint64_t jobId) {
 
 bool CodexBridge::BeginGeneration(const std::uint64_t jobId,
                                   const std::filesystem::path& capturePath,
-                                  const std::string& userPrompt) {
+                                  const std::string& userPrompt,
+                                  const std::string& model,
+                                  const std::string& reasoningEffort) {
     if (!available_ || userPrompt.empty() || !std::filesystem::exists(capturePath) ||
-        IsBusy(jobId)) {
+        model.empty() || reasoningEffort.empty() || IsBusy(jobId)) {
         return false;
     }
-    if (!EnsureThread(jobId)) {
+    if (!EnsureThread(jobId, model)) {
         return false;
     }
     std::string threadId;
@@ -453,12 +497,16 @@ bool CodexBridge::BeginGeneration(const std::uint64_t jobId,
         auto& job = jobs_[jobId];
         job.busy = true;
         job.operation = Operation::Generation;
+        job.model = model;
+        job.reasoningEffort = reasoningEffort;
         threadId = job.threadId;
     }
     try {
         const auto result = SendRequest(
             "turn/start",
             {{"threadId", threadId},
+             {"model", model},
+             {"effort", reasoningEffort},
              {"input",
               {{{"type", "text"}, {"text", PromptBuilder::GenerationPrompt(userPrompt)}},
                {{"type", "localImage"}, {"path", PathUtf8(capturePath)}},
@@ -490,12 +538,15 @@ bool CodexBridge::BeginGeneration(const std::uint64_t jobId,
 
 bool CodexBridge::BeginMaskProposal(const std::uint64_t jobId,
                                     const std::filesystem::path& capturePath,
-                                    const std::filesystem::path& generatedPath) {
+                                    const std::filesystem::path& generatedPath,
+                                    const std::string& model,
+                                    const std::string& reasoningEffort) {
     if (!available_ || IsBusy(jobId) || !std::filesystem::exists(capturePath) ||
-        !std::filesystem::exists(generatedPath)) {
+        !std::filesystem::exists(generatedPath) || model.empty() ||
+        reasoningEffort.empty()) {
         return false;
     }
-    if (!EnsureThread(jobId)) {
+    if (!EnsureThread(jobId, model)) {
         return false;
     }
     std::string threadId;
@@ -504,12 +555,16 @@ bool CodexBridge::BeginMaskProposal(const std::uint64_t jobId,
         auto& job = jobs_[jobId];
         job.busy = true;
         job.operation = Operation::Mask;
+        job.model = model;
+        job.reasoningEffort = reasoningEffort;
         threadId = job.threadId;
     }
     try {
         const auto result = SendRequest(
             "turn/start",
             {{"threadId", threadId},
+             {"model", model},
+             {"effort", reasoningEffort},
              {"input",
               {{{"type", "text"}, {"text", PromptBuilder::MaskPrompt()}},
                {{"type", "localImage"}, {"path", PathUtf8(capturePath)}},

@@ -39,7 +39,9 @@ private:
 std::filesystem::path Session(const wchar_t* name) {
     static unsigned counter = 0;
     const auto uniqueName = std::wstring(name) + L"-" +
-        std::to_wstring(GetCurrentProcessId()) + L"-" + std::to_wstring(++counter);
+        std::to_wstring(GetCurrentProcessId()) + L"-" +
+        std::to_wstring(std::chrono::steady_clock::now().time_since_epoch().count()) + L"-" +
+        std::to_wstring(++counter);
     const auto path = std::filesystem::temp_directory_path() / "codextex-tests" / uniqueName;
     std::filesystem::create_directories(path);
     return path;
@@ -115,7 +117,8 @@ TEST_CASE("App Server mock delivers generated images and structured mask proposa
     REQUIRE(bridge.Start(session, std::filesystem::path(CODEXTEX_MOCK_CODEX_PATH)));
     REQUIRE(bridge.IsAvailable());
     constexpr std::uint64_t jobId = 7;
-    REQUIRE(bridge.BeginGeneration(jobId, capture, "mock material"));
+    REQUIRE(bridge.BeginGeneration(jobId, capture, "mock material",
+                                   "gpt-5.6-sol", "medium"));
     const auto generationEvents = WaitForIdle(bridge, jobId);
     const auto generated = std::find_if(generationEvents.begin(), generationEvents.end(),
         [](const auto& event) { return event.type == codextex::CodexEventType::GeneratedImage; });
@@ -123,7 +126,8 @@ TEST_CASE("App Server mock delivers generated images and structured mask proposa
     CHECK(generated->jobId == jobId);
     CHECK(std::filesystem::exists(generated->imagePath));
 
-    REQUIRE(bridge.BeginMaskProposal(jobId, capture, generated->imagePath));
+    REQUIRE(bridge.BeginMaskProposal(jobId, capture, generated->imagePath,
+                                     "gpt-5.6-sol", "medium"));
     const auto maskEvents = WaitForIdle(bridge, jobId);
     const auto proposal = std::find_if(maskEvents.begin(), maskEvents.end(),
         [](const auto& event) { return event.type == codextex::CodexEventType::MaskProposalReady; });
@@ -138,6 +142,8 @@ TEST_CASE("App Server mock delivers generated images and structured mask proposa
     CHECK(logText.str().find("\"method\":\"thread/start\"") != std::string::npos);
     CHECK(logText.str().find("\"sandbox\":\"workspace-write\"") != std::string::npos);
     CHECK(logText.str().find("\"method\":\"turn/start\"") != std::string::npos);
+    CHECK(logText.str().find("\"model\":\"gpt-5.6-sol\"") != std::string::npos);
+    CHECK(logText.str().find("\"effort\":\"medium\"") != std::string::npos);
     CHECK(logText.str().find("\"type\":\"imageGeneration\"") != std::string::npos);
 }
 
@@ -152,7 +158,8 @@ TEST_CASE("App Server falls back to the legacy camel-case sandbox mode") {
 
     codextex::CodexBridge bridge;
     REQUIRE(bridge.Start(session, std::filesystem::path(CODEXTEX_MOCK_CODEX_PATH)));
-    REQUIRE(bridge.BeginGeneration(1, capture, "legacy sandbox"));
+    REQUIRE(bridge.BeginGeneration(1, capture, "legacy sandbox",
+                                   "gpt-5.6-sol", "medium"));
     const auto events = WaitForIdle(bridge, 1);
     CHECK(std::any_of(events.begin(), events.end(), [](const auto& event) {
         return event.type == codextex::CodexEventType::GeneratedImage;
@@ -167,7 +174,7 @@ TEST_CASE("App Server mock interrupts an active generation") {
 
     codextex::CodexBridge bridge;
     REQUIRE(bridge.Start(session, std::filesystem::path(CODEXTEX_MOCK_CODEX_PATH)));
-    REQUIRE(bridge.BeginGeneration(11, capture, "hold"));
+    REQUIRE(bridge.BeginGeneration(11, capture, "hold", "gpt-5.6-sol", "medium"));
     REQUIRE(bridge.IsBusy(11));
     bridge.Cancel(11);
     const auto events = WaitForIdle(bridge, 11);
@@ -186,8 +193,8 @@ TEST_CASE("App Server routes concurrent projection jobs independently") {
 
     codextex::CodexBridge bridge;
     REQUIRE(bridge.Start(session, std::filesystem::path(CODEXTEX_MOCK_CODEX_PATH)));
-    REQUIRE(bridge.BeginGeneration(21, capture, "first"));
-    REQUIRE(bridge.BeginGeneration(22, capture, "second"));
+    REQUIRE(bridge.BeginGeneration(21, capture, "first", "gpt-5.6-sol", "low"));
+    REQUIRE(bridge.BeginGeneration(22, capture, "second", "gpt-5.6-luna", "medium"));
     CHECK(bridge.IsBusy(21));
     CHECK(bridge.IsBusy(22));
 

@@ -7,3 +7,5 @@
 *.suo
 *.VC.db
 *.VC.VC.opendb
+CodexTex.settings.json
+CodexTex-ImageGen.log

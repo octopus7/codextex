@@ -18,6 +18,7 @@
 #include <string_view>
 #include <thread>
 #include <unordered_map>
+#include <vector>
 
 namespace codextex {
 
@@ -37,6 +38,18 @@ struct CodexEvent {
     std::uint64_t jobId{};
 };
 
+struct CodexReasoningOption {
+    std::string value;
+    std::string description;
+};
+
+struct CodexModelInfo {
+    std::string id;
+    std::string displayName;
+    std::string defaultReasoningEffort;
+    std::vector<CodexReasoningOption> supportedReasoningEfforts;
+};
+
 class CodexBridge {
 public:
     CodexBridge() = default;
@@ -54,11 +67,14 @@ public:
     [[nodiscard]] bool IsBusy() const noexcept;
     [[nodiscard]] bool IsBusy(std::uint64_t jobId) const noexcept;
     [[nodiscard]] const std::string& AvailabilityMessage() const noexcept { return availabilityMessage_; }
+    [[nodiscard]] const std::vector<CodexModelInfo>& Models() const noexcept { return models_; }
 
     bool BeginGeneration(std::uint64_t jobId, const std::filesystem::path& capturePath,
-                         const std::string& userPrompt);
+                         const std::string& userPrompt, const std::string& model,
+                         const std::string& reasoningEffort);
     bool BeginMaskProposal(std::uint64_t jobId, const std::filesystem::path& capturePath,
-                           const std::filesystem::path& generatedPath);
+                           const std::filesystem::path& generatedPath,
+                           const std::string& model, const std::string& reasoningEffort);
     void Cancel(std::uint64_t jobId);
     void Forget(std::uint64_t jobId);
     std::vector<CodexEvent> PollEvents();
@@ -72,10 +88,12 @@ private:
         Operation operation{Operation::None};
         std::string threadId;
         std::string activeTurnId;
+        std::string model;
+        std::string reasoningEffort;
         bool busy{};
     };
 
-    bool EnsureThread(std::uint64_t jobId);
+    bool EnsureThread(std::uint64_t jobId, const std::string& model);
     std::optional<std::uint64_t> FindJob(const nlohmann::json& params) const;
     nlohmann::json SendRequest(const std::string& method, nlohmann::json params,
                                std::chrono::milliseconds timeout = std::chrono::seconds(15));
@@ -104,6 +122,7 @@ private:
     std::filesystem::path imagegenSkillPath_;
     std::filesystem::path diagnosticLogPath_;
     std::string availabilityMessage_ = "Codex has not been checked.";
+    std::vector<CodexModelInfo> models_;
     std::unordered_map<std::uint64_t, JobState> jobs_;
     std::unordered_map<std::string, std::uint64_t> jobsByThread_;
 

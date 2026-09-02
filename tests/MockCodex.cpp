@@ -49,12 +49,31 @@ int main() {
         } else if (method == "account/read") {
             if (mode == "signed-out") Respond(request, {{"account", nullptr}});
             else Respond(request, {{"account", {{"type", "chatgpt"}}}});
+        } else if (method == "model/list") {
+            Respond(request, {{"data", {
+                {{"id", "gpt-5.6-sol"}, {"model", "gpt-5.6-sol"},
+                 {"displayName", "GPT-5.6-Sol"}, {"defaultReasoningEffort", "medium"},
+                 {"supportedReasoningEfforts", {
+                     {{"reasoningEffort", "low"}, {"description", "Fast"}},
+                     {{"reasoningEffort", "medium"}, {"description", "Balanced"}},
+                     {{"reasoningEffort", "high"}, {"description", "Deep"}},
+                     {{"reasoningEffort", "xhigh"}, {"description", "Very deep"}}}}},
+                {{"id", "gpt-5.6-luna"}, {"model", "gpt-5.6-luna"},
+                 {"displayName", "GPT-5.6-Luna"}, {"defaultReasoningEffort", "medium"},
+                 {"supportedReasoningEfforts", {
+                     {{"reasoningEffort", "low"}, {"description", "Fast"}},
+                     {{"reasoningEffort", "medium"}, {"description", "Balanced"}}}}}
+            }}});
         } else if (method == "skills/list") {
             const bool enabled = mode != "missing-skill";
             Respond(request, {{"data", {{{"skills", {{{"name", "imagegen"},
                                                         {"enabled", enabled},
                                                         {"path", "C:/mock/imagegen/SKILL.md"}}}}}}}});
         } else if (method == "thread/start") {
+            if (request.at("params").value("model", "").empty()) {
+                RespondError(request, "thread/start requires a model");
+                continue;
+            }
             const std::string sandbox = request.at("params").value("sandbox", "");
             const std::string expected = mode == "legacy-sandbox"
                 ? "workspaceWrite" : "workspace-write";
@@ -65,6 +84,11 @@ int main() {
                     std::to_string(++threadCounter)}}}});
             }
         } else if (method == "turn/start") {
+            if (request.at("params").value("model", "").empty() ||
+                request.at("params").value("effort", "").empty()) {
+                RespondError(request, "turn/start requires model and effort");
+                continue;
+            }
             const bool mask = request.at("params").contains("outputSchema");
             const std::string threadId = request.at("params").at("threadId").get<std::string>();
             const std::string turnId = (mask ? "mask-turn-" : "generation-turn-") +

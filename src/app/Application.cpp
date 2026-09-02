@@ -125,6 +125,17 @@ Vec3 Normalize(const Vec3& value) {
     return {value.x / length, value.y / length, value.z / length};
 }
 
+const CodexModelInfo* FindModel(const std::vector<CodexModelInfo>& models,
+                                const std::string& id) {
+    const auto found = std::ranges::find(models, id, &CodexModelInfo::id);
+    return found == models.end() ? nullptr : &*found;
+}
+
+bool SupportsEffort(const CodexModelInfo& model, const std::string& effort) {
+    return std::ranges::any_of(model.supportedReasoningEfforts,
+        [&effort](const CodexReasoningOption& option) { return option.value == effort; });
+}
+
 bool LoadUiFont(ImGuiIO& io, const float dpiScale) {
     std::array<wchar_t, MAX_PATH> windowsDirectory{};
     const UINT length = GetWindowsDirectoryW(windowsDirectory.data(),
@@ -200,12 +211,24 @@ bool Application::Initialize(HINSTANCE instance, const int showCommand, std::str
     std::error_code directoryError;
     std::filesystem::create_directories(sessionDirectory_, directoryError);
     const auto executableDirectory = ExecutableDirectory();
+    settingsPath_ = executableDirectory.empty()
+        ? std::filesystem::path{}
+        : executableDirectory / L"CodexTex.settings.json";
+    std::string settingsError;
+    if (settingsPath_.empty() ||
+        !LoadCodexRequestSettings(settingsPath_, codexSettings_,
+                                  settingsLoadedFromDisk_, settingsError)) {
+        settingsMessage_ = settingsError.empty()
+            ? "Could not locate the executable directory for Codex settings."
+            : settingsError;
+    }
     imageGenLogPath_ = executableDirectory.empty()
         ? std::filesystem::path{}
         : executableDirectory / L"CodexTex-ImageGen.log";
     const bool diagnosticLogReady = !imageGenLogPath_.empty() &&
         codex_.EnableDiagnosticLog(imageGenLogPath_);
     codex_.Start(sessionDirectory_);
+    NormalizeCodexSettings();
     if (!diagnosticLogReady) {
         SetStatus("Could not create CodexTex-ImageGen.log beside the executable.", true);
     } else if (!koreanFontLoaded) {
@@ -567,7 +590,7 @@ void Application::DrawTools() {
         }
     } else {
         ImGui::SeparatorText("Locked projection source");
-        ImGui::BeginChild("LockedSourceInfo", ImVec2(0, 142.0f * dpiScale_), true);
+        ImGui::BeginChild("LockedSourceInfo", ImVec2(0, 164.0f * dpiScale_), true);
         ImGui::TextColored(ImVec4(0.45f, 0.85f, 1, 1),
                            "Read-only snapshot for Projection %llu",
                            static_cast<unsigned long long>(tab->id));
@@ -578,6 +601,7 @@ void Application::DrawTools() {
         ImGui::Text("Captured viewport: %u x %u; ImageGen crop: %u x %u",
                     tab->frame.width, tab->frame.height,
                     tab->frame.cropSize, tab->frame.cropSize);
+        ImGui::Text("Codex: %s / %s", tab->model.c_str(), tab->reasoningEffort.c_str());
         const auto hiddenCount = std::count(tab->hiddenFaces.begin(), tab->hiddenFaces.end(),
                                             std::uint8_t{1});
         ImGui::Text("Frozen hidden faces: %zu", hiddenCount);
@@ -654,6 +678,53 @@ void Application::DrawTools() {
         ImGui::TextWrapped("Generate captures the cyan square immediately, then opens an independent locked painting tab. The main viewport remains usable.");
         ImGui::InputTextMultiline("ImageGen prompt", generationPrompt_.data(), generationPrompt_.size(),
                                   ImVec2(-1, 90.0f * dpiScale_));
+        const auto& models = codex_.Models();
+        const CodexModelInfo* selectedModel = FindModel(models, codexSettings_.model);
+        const std::string modelPreview = selectedModel
+            ? selectedModel->displayName + " (" + selectedModel->id + ")"
+            : codexSettings_.model;
+        if (ImGui::BeginCombo("Codex model", modelPreview.c_str())) {
+            for (const auto& model : models) {
+                const bool selected = model.id == codexSettings_.model;
+                const std::string label = model.displayName + " (" + model.id + ")";
+                if (ImGui::Selectable(label.c_str(), selected)) {
+                    codexSettings_.model = model.id;
+                    if (!SupportsEffort(model, codexSettings_.reasoningEffort)) {
+                        codexSettings_.reasoningEffort = SupportsEffort(model, "medium")
+                            ? "medium" : model.defaultReasoningEffort;
+                    }
+                    settingsChanged_ = true;
+                    settingsMessage_.clear();
+                }
+                if (selected) ImGui::SetItemDefaultFocus();
+            }
+            ImGui::EndCombo();
+        }
+        selectedModel = FindModel(models, codexSettings_.model);
+        if (selectedModel && ImGui::BeginCombo("Reasoning effort",
+                                               codexSettings_.reasoningEffort.c_str())) {
+            for (const auto& option : selectedModel->supportedReasoningEfforts) {
+                const bool selected = option.value == codexSettings_.reasoningEffort;
+                if (ImGui::Selectable(option.value.c_str(), selected)) {
+                    codexSettings_.reasoningEffort = option.value;
+                    settingsChanged_ = true;
+                    settingsMessage_.clear();
+                }
+                if (ImGui::IsItemHovered() && !option.description.empty()) {
+                    ImGui::SetTooltip("%s", option.description.c_str());
+                }
+                if (selected) ImGui::SetItemDefaultFocus();
+            }
+            ImGui::EndCombo();
+        }
+        if (settingsChanged_ || !settingsLoadedFromDisk_) {
+            ImGui::TextDisabled("Pending: saved beside the executable immediately before generation.");
+        } else {
+            ImGui::TextDisabled("Loaded from CodexTex.settings.json.");
+        }
+        if (!settingsMessage_.empty()) {
+            ImGui::TextColored(ImVec4(1, 0.35f, 0.3f, 1), "%s", settingsMessage_.c_str());
+        }
         const bool canGenerate = meshLoaded_ && textureLoaded_ && codex_.IsAvailable() &&
                                  generationPrompt_[0] != '\0';
         ImGui::BeginDisabled(!canGenerate);
@@ -684,7 +755,8 @@ void Application::DrawTools() {
             ImGui::Text("Projection: %s", Narrow(tab->projectionPath.filename()).c_str());
             ImGui::BeginDisabled(!codex_.IsAvailable() || codex_.IsBusy(tab->id) || tab->applied);
             if (ImGui::Button("Suggest mask with Codex")) {
-                codex_.BeginMaskProposal(tab->id, tab->capturePath, tab->projectionPath);
+                codex_.BeginMaskProposal(tab->id, tab->capturePath, tab->projectionPath,
+                                         tab->model, tab->reasoningEffort);
             }
             ImGui::EndDisabled();
         }
@@ -738,6 +810,7 @@ void Application::DrawTools() {
     if (!codex_.IsAvailable() && !codex_.IsBusy()) {
         if (ImGui::Button("Retry Codex detection")) {
             const bool started = codex_.Start(sessionDirectory_);
+            NormalizeCodexSettings();
             SetStatus(codex_.AvailabilityMessage(), !started || !codex_.IsAvailable());
         }
     }
@@ -1133,6 +1206,8 @@ bool Application::CreateProjectionTab(const bool generate) {
     tab.hiddenFaces = hiddenFaces_;
     tab.referenceAssetsVisible = referenceAssetsVisible_;
     tab.baseTextureRevision = textureRevision_;
+    tab.model = codexSettings_.model;
+    tab.reasoningEffort = codexSettings_.reasoningEffort;
     tab.capturePath = sessionDirectory_ /
         (L"capture-" + std::to_wstring(tab.id) + L".png");
     TextureImage capture;
@@ -1152,8 +1227,10 @@ bool Application::CreateProjectionTab(const bool generate) {
     if (generate) {
         created.generationStartedAt = std::chrono::steady_clock::now();
         created.status = "ImageGen request is starting.";
-        if (!codex_.BeginGeneration(created.id, created.capturePath,
-                                    generationPrompt_.data())) {
+        if (!SaveCodexSettingsForRequest() ||
+            !codex_.BeginGeneration(created.id, created.capturePath,
+                                    generationPrompt_.data(), created.model,
+                                    created.reasoningEffort)) {
             created.generationStartedAt.reset();
             created.status = "Could not start ImageGen; an external PNG can still be loaded.";
             created.statusIsError = true;
@@ -1164,6 +1241,36 @@ bool Application::CreateProjectionTab(const bool generate) {
     }
     SetStatus("Projection workspace created; the main viewport remains available.");
     return true;
+}
+
+bool Application::SaveCodexSettingsForRequest() {
+    std::string error;
+    if (!SaveCodexRequestSettings(settingsPath_, codexSettings_, error)) {
+        settingsMessage_ = error;
+        SetStatus(error, true);
+        return false;
+    }
+    settingsLoadedFromDisk_ = true;
+    settingsChanged_ = false;
+    settingsMessage_.clear();
+    return true;
+}
+
+void Application::NormalizeCodexSettings() {
+    const auto& models = codex_.Models();
+    if (models.empty()) return;
+    const CodexModelInfo* model = FindModel(models, codexSettings_.model);
+    if (!model) {
+        const CodexModelInfo* defaultModel = FindModel(models, "gpt-5.6-sol");
+        model = defaultModel ? defaultModel : &models.front();
+        codexSettings_.model = model->id;
+        settingsChanged_ = settingsLoadedFromDisk_;
+    }
+    if (!SupportsEffort(*model, codexSettings_.reasoningEffort)) {
+        codexSettings_.reasoningEffort = SupportsEffort(*model, "medium")
+            ? "medium" : model->defaultReasoningEffort;
+        settingsChanged_ = settingsLoadedFromDisk_;
+    }
 }
 
 Application::ProjectionTab* Application::FindProjectionTab(const std::uint64_t id) {

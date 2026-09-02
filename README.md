@@ -69,6 +69,15 @@ images and external projection PNGs must also be square; preview, mask editing,
 and UV baking are clipped and mapped back to that frame without stretching.
 The UI loads a Windows Korean font for IME-composed Korean prompt input and keeps
 the completed text as UTF-8 when it is sent to Codex.
+
+The main viewport offers model and reasoning-effort selectors populated from the
+App Server's `model/list` response. With no settings file, the built-in selection
+is `gpt-5.6-sol` with `medium` effort. Selection changes remain pending in memory
+and are written immediately before the next generation request to
+`CodexTex.settings.json` beside `CodexTex.exe`; startup reads that file when it
+exists. Each projection tab records the exact model and effort used for its AI
+work, and both values are sent explicitly with `turn/start` so Codex session
+defaults cannot silently replace them.
 CodexTex enables per-monitor DPI awareness before creating its window. UI fonts,
 spacing, and the initial window size are rasterized at the monitor's native DPI,
 and are rebuilt after a `WM_DPICHANGED` monitor transition instead of relying on
