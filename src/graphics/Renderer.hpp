@@ -92,6 +92,8 @@ public:
     bool CaptureFrame(const CameraState& camera, TextureImage& image, std::string& error);
     bool CaptureFrame(const CameraState& camera, TextureImage& image, ProjectionFrame& frame,
                       std::string& error);
+    bool CaptureFrame(const CameraState& camera, std::uint32_t width, std::uint32_t height,
+                      TextureImage& image, ProjectionFrame& frame, std::string& error);
     void ActivateProjectionFrame(const ProjectionFrame& frame);
     bool BakeProjection(float maxAngleDegrees, std::string& error);
     bool ReadWorkingTexture(TextureImage& image, std::string& error) const;
@@ -121,6 +123,7 @@ private:
                            std::string& error);
     bool ReadTexture(ID3D11Texture2D* texture, DXGI_FORMAT format, TextureImage& image,
                      std::string& error) const;
+    void DrawScene(std::uint32_t width, std::uint32_t height, const CameraState& camera);
     std::vector<std::uint32_t> ReadIdBuffer() const;
     void UpdateVisibleIndexBuffer();
     void UpdateSelectionBuffer();

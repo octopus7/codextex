@@ -898,6 +898,11 @@ void Renderer::RenderViewport(const std::uint32_t width, const std::uint32_t hei
     context_->ClearRenderTargetView(idRtv_.Get(), zero.data());
     context_->ClearRenderTargetView(normalRtv_.Get(), zero.data());
     context_->ClearDepthStencilView(depthDsv_.Get(), D3D11_CLEAR_DEPTH, 1.0f, 0);
+    DrawScene(width, height, camera);
+}
+
+void Renderer::DrawScene(const std::uint32_t width, const std::uint32_t height,
+                         const CameraState& camera) {
     D3D11_MAPPED_SUBRESOURCE mapped{};
     if (SUCCEEDED(context_->Map(constants_.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped))) {
         ShaderConstants constants{};
@@ -966,16 +971,37 @@ bool Renderer::CaptureFrame(const CameraState& camera, TextureImage& image, std:
 
 bool Renderer::CaptureFrame(const CameraState& camera, TextureImage& image,
                             ProjectionFrame& frame, std::string& error) {
-    if (!colorTexture_ || !depthTexture_ || viewportWidth_ == 0 || visibleIndices_.empty()) {
+    return CaptureFrame(camera, viewportWidth_, viewportHeight_, image, frame, error);
+}
+
+bool Renderer::CaptureFrame(const CameraState& camera, const std::uint32_t width,
+                            const std::uint32_t height, TextureImage& image,
+                            ProjectionFrame& frame, std::string& error) {
+    if (!device_ || width == 0 || height == 0 || visibleIndices_.empty()) {
         error = "Render a visible mesh before capturing the view.";
         return false;
     }
+
+    ClearFrozenFrame();
     D3D11_TEXTURE2D_DESC colorDesc{};
-    colorTexture_->GetDesc(&colorDesc);
+    colorDesc.Width = width;
+    colorDesc.Height = height;
+    colorDesc.MipLevels = 1;
+    colorDesc.ArraySize = 1;
+    colorDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM_SRGB;
+    colorDesc.SampleDesc.Count = 1;
+    colorDesc.Usage = D3D11_USAGE_DEFAULT;
+    colorDesc.BindFlags = D3D11_BIND_RENDER_TARGET;
     HRESULT hr = device_->CreateTexture2D(&colorDesc, nullptr, frozenColor_.ReleaseAndGetAddressOf());
-    if (SUCCEEDED(hr)) context_->CopyResource(frozenColor_.Get(), colorTexture_.Get());
-    D3D11_TEXTURE2D_DESC depthDesc{};
-    depthTexture_->GetDesc(&depthDesc);
+    ComPtr<ID3D11RenderTargetView> frozenColorRtv;
+    if (SUCCEEDED(hr)) {
+        hr = device_->CreateRenderTargetView(frozenColor_.Get(), nullptr,
+                                              frozenColorRtv.GetAddressOf());
+    }
+
+    D3D11_TEXTURE2D_DESC depthDesc = colorDesc;
+    depthDesc.Format = DXGI_FORMAT_R32_TYPELESS;
+    depthDesc.BindFlags = D3D11_BIND_DEPTH_STENCIL | D3D11_BIND_SHADER_RESOURCE;
     if (SUCCEEDED(hr)) hr = device_->CreateTexture2D(&depthDesc, nullptr, frozenDepth_.ReleaseAndGetAddressOf());
     ComPtr<ID3D11DepthStencilView> frozenDepthDsv;
     D3D11_DEPTH_STENCIL_VIEW_DESC dsvDesc{};
@@ -983,44 +1009,20 @@ bool Renderer::CaptureFrame(const CameraState& camera, TextureImage& image,
     dsvDesc.ViewDimension = D3D11_DSV_DIMENSION_TEXTURE2D;
     if (SUCCEEDED(hr)) hr = device_->CreateDepthStencilView(frozenDepth_.Get(), &dsvDesc,
                                                             frozenDepthDsv.GetAddressOf());
-    if (SUCCEEDED(hr)) {
-        context_->OMSetRenderTargets(0, nullptr, frozenDepthDsv.Get());
-        context_->ClearDepthStencilView(frozenDepthDsv.Get(), D3D11_CLEAR_DEPTH, 1.0f, 0);
-        D3D11_MAPPED_SUBRESOURCE mapped{};
-        hr = context_->Map(constants_.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped);
-        if (SUCCEEDED(hr)) {
-            ShaderConstants constants{};
-            ComputeMatrices(camera, static_cast<float>(viewportWidth_) / viewportHeight_,
-                            constants.worldViewProjection, constants.world, constants.cameraPosition);
-            constants.parameters[0] = static_cast<float>(viewportWidth_);
-            constants.parameters[1] = static_cast<float>(viewportHeight_);
-            std::memcpy(mapped.pData, &constants, sizeof(constants));
-            context_->Unmap(constants_.Get(), 0);
-        }
-    }
-    if (SUCCEEDED(hr)) {
-        const D3D11_VIEWPORT viewport{0, 0, static_cast<float>(viewportWidth_),
-                                      static_cast<float>(viewportHeight_), 0, 1};
-        const UINT stride = sizeof(Vertex);
-        const UINT offset = 0;
-        context_->RSSetViewports(1, &viewport);
-        context_->RSSetState(rasterizer_.Get());
-        context_->IASetInputLayout(inputLayout_.Get());
-        context_->IASetVertexBuffers(0, 1, vertexBuffer_.GetAddressOf(), &stride, &offset);
-        context_->IASetIndexBuffer(visibleIndexBuffer_.Get(), DXGI_FORMAT_R32_UINT, 0);
-        context_->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-        context_->VSSetShader(viewportVs_.Get(), nullptr, 0);
-        context_->VSSetConstantBuffers(0, 1, constants_.GetAddressOf());
-        context_->PSSetShader(nullptr, nullptr, 0);
-        context_->DrawIndexed(static_cast<UINT>(visibleIndices_.size()), 0, 0);
-    }
-    context_->OMSetRenderTargets(0, nullptr, nullptr);
     D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc{};
     srvDesc.Format = DXGI_FORMAT_R32_FLOAT;
     srvDesc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
     srvDesc.Texture2D.MipLevels = 1;
     if (SUCCEEDED(hr)) hr = device_->CreateShaderResourceView(frozenDepth_.Get(), &srvDesc,
                                                               frozenDepthSrv_.ReleaseAndGetAddressOf());
+    if (SUCCEEDED(hr)) {
+        ID3D11RenderTargetView* captureTarget = frozenColorRtv.Get();
+        context_->OMSetRenderTargets(1, &captureTarget, frozenDepthDsv.Get());
+        context_->ClearRenderTargetView(frozenColorRtv.Get(), viewportBackgroundColor_.data());
+        context_->ClearDepthStencilView(frozenDepthDsv.Get(), D3D11_CLEAR_DEPTH, 1.0f, 0);
+        DrawScene(width, height, camera);
+    }
+    context_->OMSetRenderTargets(0, nullptr, nullptr);
 
     D3D11_BUFFER_DESC indexDesc{};
     indexDesc.ByteWidth = static_cast<UINT>(visibleIndices_.size() * sizeof(std::uint32_t));
@@ -1034,8 +1036,8 @@ bool Renderer::CaptureFrame(const CameraState& camera, TextureImage& image,
         return false;
     }
     frozenCamera_ = camera;
-    frozenWidth_ = viewportWidth_;
-    frozenHeight_ = viewportHeight_;
+    frozenWidth_ = width;
+    frozenHeight_ = height;
     frozenCropSize_ = std::min(frozenWidth_, frozenHeight_);
     frozenCropX_ = (frozenWidth_ - frozenCropSize_) / 2;
     frozenCropY_ = (frozenHeight_ - frozenCropSize_) / 2;

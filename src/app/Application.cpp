@@ -27,6 +27,7 @@ namespace {
 
 constexpr wchar_t kWindowClass[] = L"CodexTexWindow";
 constexpr std::size_t kUndoLimit = 8;
+constexpr std::uint32_t kOfflineCaptureSize = 1024;
 std::string Narrow(const std::filesystem::path& path) {
     const auto value = path.u8string();
     return {reinterpret_cast<const char*>(value.data()), value.size()};
@@ -135,6 +136,17 @@ struct SquareCropFrame {
 SquareCropFrame CenteredSquare(const Vec2& size) {
     const float side = std::max(std::min(size.x, size.y), 1.0f);
     return {{(size.x - side) * 0.5f, (size.y - side) * 0.5f}, side};
+}
+
+CameraState CameraForSquareCrop(CameraState camera, const std::uint32_t viewportWidth,
+                                const std::uint32_t viewportHeight) {
+    if (viewportWidth != 0 && viewportHeight > viewportWidth) {
+        const float aspect = static_cast<float>(viewportWidth) / viewportHeight;
+        const float halfFov = camera.fovDegrees * std::numbers::pi_v<float> / 360.0f;
+        camera.fovDegrees = 2.0f * std::atan(std::tan(halfFov) * aspect) *
+                            180.0f / std::numbers::pi_v<float>;
+    }
+    return camera;
 }
 
 float Dot(const Vec3& a, const Vec3& b) {
@@ -905,9 +917,7 @@ void Application::DrawTools() {
         ImGui::Text(Tr("Triangles: %zu"), mesh_.TriangleCount());
         ImGui::Text(Tr("Texture: %s (%ux%u)"), Narrow(texturePath_.filename()).c_str(),
                     sourceTexture_.Width(), sourceTexture_.Height());
-        ImGui::Text(Tr("Captured viewport: %u x %u; ImageGen crop: %u x %u"),
-                    tab->frame.width, tab->frame.height,
-                    tab->frame.cropSize, tab->frame.cropSize);
+        ImGui::Text(Tr("Offline capture: %u x %u"), tab->frame.width, tab->frame.height);
         ImGui::Text("Codex: %s / %s", tab->model.c_str(), tab->reasoningEffort.c_str());
         const auto hiddenCount = std::count(tab->hiddenFaces.begin(), tab->hiddenFaces.end(),
                                             std::uint8_t{1});
@@ -1660,10 +1670,10 @@ bool Application::CreateProjectionTab(const bool generate) {
     renderer_.SetHiddenFaces(hiddenFaces_);
     renderer_.SetReferenceAssetsVisible(referenceAssetsVisible_);
     renderer_.SetProjectionPreviewMode(ProjectionPreviewMode::Disabled);
-    renderer_.RenderViewport(renderer_.ViewportWidth(), renderer_.ViewportHeight(), camera_);
     ProjectionTab tab;
     tab.id = nextProjectionId_++;
-    tab.camera = camera_;
+    tab.camera = CameraForSquareCrop(camera_, renderer_.ViewportWidth(),
+                                     renderer_.ViewportHeight());
     tab.hiddenFaces = hiddenFaces_;
     tab.referenceAssetsVisible = referenceAssetsVisible_;
     tab.baseTextureRevision = textureRevision_;
@@ -1673,7 +1683,8 @@ bool Application::CreateProjectionTab(const bool generate) {
         (L"capture-" + std::to_wstring(tab.id) + L".png");
     TextureImage capture;
     std::string error;
-    if (!renderer_.CaptureFrame(camera_, capture, tab.frame, error) ||
+    if (!renderer_.CaptureFrame(tab.camera, kOfflineCaptureSize, kOfflineCaptureSize,
+                                capture, tab.frame, error) ||
         !capture.SavePng(tab.capturePath, error)) {
         SetStatus(error, true);
         ActivateMainViewport();

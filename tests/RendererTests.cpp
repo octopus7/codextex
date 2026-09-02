@@ -120,6 +120,19 @@ f 1/1 2/2 3/3 4/4
     CHECK(workingCapture.Pixels()[2] >= 151);
     CHECK(workingCapture.Pixels()[2] <= 155);
 
+    codextex::TextureImage offlineCapture;
+    codextex::Renderer::ProjectionFrame offlineFrame;
+    REQUIRE(renderer.CaptureFrame(camera, 1024, 1024, offlineCapture, offlineFrame, error));
+    CHECK(offlineCapture.Width() == 1024);
+    CHECK(offlineCapture.Height() == 1024);
+    CHECK(offlineFrame.width == 1024);
+    CHECK(offlineFrame.height == 1024);
+    CHECK(offlineFrame.cropX == 0);
+    CHECK(offlineFrame.cropY == 0);
+    CHECK(offlineFrame.cropSize == 1024);
+    CHECK(renderer.ViewportWidth() == 64);
+    CHECK(renderer.ViewportHeight() == 64);
+
     renderer.SetOriginalTexturePreview(true);
     renderer.RenderViewport(64, 64, camera);
     codextex::TextureImage originalCapture;

@@ -78,9 +78,11 @@ preview, `Original` shows only the PNG as loaded, and `Generated Image` ignores 
 fully previews the generated image over the projectable primary-mesh surface.
 `Generated Image` remains disabled until a projection image is available, and generated
 pixels are never applied to inference reference assets in this preview.
-The viewport crop frame shows the exact centered square sent to ImageGen. Generated
-images and external projection PNGs must also be square; preview, mask editing,
-and UV baking are clipped and mapped back to that frame without stretching.
+The viewport crop frame shows the exact centered square sent to ImageGen. Pressing
+Generate renders that view again into a dedicated 1024x1024 GPU target, independent
+of the on-screen viewport size or DPI. Generated images and external projection PNGs
+must also be square; preview, mask editing, and UV baking map back to that frame
+without stretching.
 The UI supports English, Japanese, and Korean. On first launch it follows the
 Windows user locale and falls back to English for unsupported locales. A choice
 under `Settings > Language` is saved immediately and takes precedence on later
@@ -101,7 +103,7 @@ spacing, and the initial window size are rasterized at the monitor's native DPI,
 and are rebuilt after a `WM_DPICHANGED` monitor transition instead of relying on
 Windows bitmap scaling.
 
-Projection tabs show the fixed OBJ, Base Color, triangle count, capture size,
+Projection tabs show the fixed OBJ, Base Color, triangle count, 1024x1024 offline capture size,
 and hidden-face snapshot in a read-only source panel. Primary OBJ/texture loading
 is available only from `Main Viewport`; inference reference OBJ + PNG pairs can
 still be added, removed, or toggled from either context.

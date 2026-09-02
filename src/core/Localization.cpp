@@ -47,7 +47,7 @@ constexpr std::array kTranslations{
     Translation{"Texture: %s (%ux%u)", "テクスチャ: %s (%ux%u)", "텍스처: %s (%ux%u)"},
     Translation{"Locked projection source", "固定プロジェクションソース", "고정 프로젝션 원본"},
     Translation{"Read-only snapshot for Projection %llu", "プロジェクション %llu の読み取り専用スナップショット", "프로젝션 %llu 읽기 전용 스냅샷"},
-    Translation{"Captured viewport: %u x %u; ImageGen crop: %u x %u", "キャプチャ: %u x %u; ImageGenクロップ: %u x %u", "캡처 뷰포트: %u x %u; ImageGen 크롭: %u x %u"},
+    Translation{"Offline capture: %u x %u", "オフラインキャプチャ: %u x %u", "오프라인 캡처: %u x %u"},
     Translation{"Frozen hidden faces: %zu", "固定された非表示面: %zu", "고정된 숨김 면: %zu"},
     Translation{"OBJ and Base Color loading is available only in Main Viewport.", "OBJとベースカラーの読み込みはメインビューポートでのみ可能です。", "OBJ와 베이스 컬러는 메인 뷰포트에서만 불러올 수 있습니다."},
     Translation{"Warning: %zu overlapping UV pair(s)", "警告: 重複UVペア %zu 件", "경고: 겹치는 UV 쌍 %zu개"},
