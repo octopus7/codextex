@@ -19,6 +19,9 @@ TEST_CASE("Language menu names remain native and generated image is localized") 
     CHECK(codextex::Translate(UiLanguage::English, "Generated Image") == "Generated Image");
     CHECK(codextex::Translate(UiLanguage::Japanese, "Generated Image") == "生成画像");
     CHECK(codextex::Translate(UiLanguage::Korean, "Generated Image") == "생성 이미지");
+    CHECK(codextex::Translate(UiLanguage::English, "Model settings") == "Model settings");
+    CHECK(codextex::Translate(UiLanguage::Japanese, "Model settings") == "モデル設定");
+    CHECK(codextex::Translate(UiLanguage::Korean, "Model settings") == "모델 설정");
 }
 
 TEST_CASE("Saved language wins while unsupported saved values fall back to English") {

@@ -80,6 +80,7 @@ constexpr std::array kTranslations{
     Translation{"Delete", "削除", "삭제"},
     Translation{"Codex model", "Codexモデル", "Codex 모델"},
     Translation{"Reasoning effort", "推論の深さ", "추론 강도"},
+    Translation{"Model settings", "モデル設定", "모델 설정"},
     Translation{"Pending: saved beside the executable immediately before generation.", "保留中: 生成直前に実行ファイルの隣へ保存します。", "대기 중: 생성 직전에 실행 파일 옆에 저장합니다."},
     Translation{"Loaded from CodexTex.settings.json.", "CodexTex.settings.jsonから読み込みました。", "CodexTex.settings.json에서 불러왔습니다."},
     Translation{"Generate from current view", "現在のビューから生成", "현재 뷰에서 생성"},

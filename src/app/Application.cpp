@@ -1018,42 +1018,55 @@ void Application::DrawTools() {
                                   generationPrompt_.size(), ImVec2(-1, 90.0f * dpiScale_));
         const auto& models = codex_.Models();
         const CodexModelInfo* selectedModel = FindModel(models, codexSettings_.model);
-        const std::string modelPreview = selectedModel
-            ? selectedModel->displayName + " (" + selectedModel->id + ")"
-            : codexSettings_.model;
-        if (ImGui::BeginCombo(Tr("Codex model"), modelPreview.c_str())) {
-            for (const auto& model : models) {
-                const bool selected = model.id == codexSettings_.model;
-                const std::string label = model.displayName + " (" + model.id + ")";
-                if (ImGui::Selectable(label.c_str(), selected)) {
-                    codexSettings_.model = model.id;
-                    if (!SupportsEffort(model, codexSettings_.reasoningEffort)) {
-                        codexSettings_.reasoningEffort = SupportsEffort(model, "medium")
-                            ? "medium" : model.defaultReasoningEffort;
-                    }
-                    settingsChanged_ = true;
-                    settingsMessage_.clear();
-                }
-                if (selected) ImGui::SetItemDefaultFocus();
-            }
-            ImGui::EndCombo();
+        const std::string modelDisplayName = selectedModel
+            ? selectedModel->displayName : codexSettings_.model;
+        const std::string modelSummary = modelDisplayName + " (" +
+            codexSettings_.reasoningEffort + ")";
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextUnformatted(modelSummary.c_str());
+        ImGui::SameLine();
+        if (ImGui::SmallButton(Tr("Model settings"))) {
+            ImGui::OpenPopup("CodexModelSettingsPopup");
         }
-        selectedModel = FindModel(models, codexSettings_.model);
-        if (selectedModel && ImGui::BeginCombo(Tr("Reasoning effort"),
-                                               codexSettings_.reasoningEffort.c_str())) {
-            for (const auto& option : selectedModel->supportedReasoningEfforts) {
-                const bool selected = option.value == codexSettings_.reasoningEffort;
-                if (ImGui::Selectable(option.value.c_str(), selected)) {
-                    codexSettings_.reasoningEffort = option.value;
-                    settingsChanged_ = true;
-                    settingsMessage_.clear();
+        if (ImGui::BeginPopup("CodexModelSettingsPopup")) {
+            ImGui::SetNextItemWidth(300.0f * dpiScale_);
+            if (ImGui::BeginCombo(Tr("Codex model"), modelDisplayName.c_str())) {
+                for (const auto& model : models) {
+                    const bool selected = model.id == codexSettings_.model;
+                    if (ImGui::Selectable(model.displayName.c_str(), selected)) {
+                        codexSettings_.model = model.id;
+                        if (!SupportsEffort(model, codexSettings_.reasoningEffort)) {
+                            codexSettings_.reasoningEffort = SupportsEffort(model, "medium")
+                                ? "medium" : model.defaultReasoningEffort;
+                        }
+                        settingsChanged_ = true;
+                        settingsMessage_.clear();
+                    }
+                    if (selected) ImGui::SetItemDefaultFocus();
                 }
-                if (ImGui::IsItemHovered() && !option.description.empty()) {
-                    ImGui::SetTooltip("%s", option.description.c_str());
-                }
-                if (selected) ImGui::SetItemDefaultFocus();
+                ImGui::EndCombo();
             }
-            ImGui::EndCombo();
+            selectedModel = FindModel(models, codexSettings_.model);
+            if (selectedModel) {
+                ImGui::SetNextItemWidth(300.0f * dpiScale_);
+            }
+            if (selectedModel && ImGui::BeginCombo(Tr("Reasoning effort"),
+                                                   codexSettings_.reasoningEffort.c_str())) {
+                for (const auto& option : selectedModel->supportedReasoningEfforts) {
+                    const bool selected = option.value == codexSettings_.reasoningEffort;
+                    if (ImGui::Selectable(option.value.c_str(), selected)) {
+                        codexSettings_.reasoningEffort = option.value;
+                        settingsChanged_ = true;
+                        settingsMessage_.clear();
+                    }
+                    if (ImGui::IsItemHovered() && !option.description.empty()) {
+                        ImGui::SetTooltip("%s", option.description.c_str());
+                    }
+                    if (selected) ImGui::SetItemDefaultFocus();
+                }
+                ImGui::EndCombo();
+            }
+            ImGui::EndPopup();
         }
         if (settingsChanged_ || !settingsLoadedFromDisk_) {
             ImGui::TextDisabled(Tr("Pending: saved beside the executable immediately before generation."));
