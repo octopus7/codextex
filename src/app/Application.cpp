@@ -745,7 +745,7 @@ void Application::HandleViewportInput(const Vec2& topLeft, const Vec2& size, Pro
         }
         if (ImGui::IsMouseDragging(ImGuiMouseButton_Middle)) {
             const float scale = camera_.distance * 0.0015f;
-            camera_.target.x -= io.MouseDelta.x * scale;
+            camera_.target.x += io.MouseDelta.x * scale;
             camera_.target.y += io.MouseDelta.y * scale;
         }
         if (io.MouseWheel != 0.0f) {
