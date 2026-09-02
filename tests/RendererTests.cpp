@@ -145,6 +145,49 @@ f 1/1 2/2 3/3 4/4
     renderer.Shutdown();
 }
 
+TEST_CASE("WARP projection viewport rerenders a zoomed source region") {
+    HiddenWindow window;
+    REQUIRE(window.Get() != nullptr);
+
+    codextex::Renderer renderer;
+    std::string error;
+    REQUIRE(renderer.Initialize(window.Get(), error, true));
+
+    const auto directory = std::filesystem::temp_directory_path() / "codextex-tests";
+    std::filesystem::create_directories(directory);
+    const auto objPath = directory / "zoomed-region-triangle.obj";
+    std::ofstream obj(objPath, std::ios::binary | std::ios::trunc);
+    obj << R"OBJ(
+v 0.45 -0.15 0
+v 0.85 -0.15 0
+v 0.65  0.25 0
+vt 0 0
+vt 1 0
+vt 0.5 1
+f 1/1 2/2 3/3
+)OBJ";
+    obj.close();
+
+    codextex::Mesh mesh;
+    REQUIRE(mesh.LoadObj(objPath, error));
+    REQUIRE(renderer.SetMesh(mesh, error));
+    std::vector<std::uint8_t> pixels(2 * 2 * 4, 255);
+    codextex::TextureImage texture;
+    texture.Assign(2, 2, pixels);
+    REQUIRE(renderer.SetSourceAndWorkingTexture(texture, error));
+
+    codextex::CameraState camera;
+    camera.pitch = 0.0f;
+    camera.distance = 3.0f;
+    renderer.RenderViewport(128, 128, camera);
+    CHECK(renderer.PickTriangle(64, 64) == UINT32_MAX);
+    CHECK(renderer.PickTriangle(32, 64) == 0);
+
+    renderer.RenderViewportRegion(128, 128, camera, {0.0f, 0.25f}, {0.5f, 0.75f});
+    CHECK(renderer.PickTriangle(64, 64) == 0);
+    renderer.Shutdown();
+}
+
 TEST_CASE("WARP bake publishes the latest working texture after previewing original") {
     HiddenWindow window;
     REQUIRE(window.Get() != nullptr);

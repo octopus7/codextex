@@ -736,23 +736,10 @@ void Application::DrawViewport() {
                                        padding * 2.0f + rowHeight * 3.0f +
                                            style.ItemSpacing.y * 2.0f};
                 const float panelMargin = 12.0f * dpiScale_;
-                const float controlRailWidth = panelSize.x + panelMargin * 2.0f;
-                Vec2 viewportArea = available;
-                if (available.x > controlRailWidth + 96.0f * dpiScale_) {
-                    viewportArea.x -= controlRailWidth;
-                }
-                Vec2 drawSize = viewportArea;
-                const float frozenAspect = static_cast<float>(tab.frame.width) /
-                    std::max(tab.frame.height, std::uint32_t{1});
-                if (drawSize.x / drawSize.y > frozenAspect) {
-                    drawSize.x = drawSize.y * frozenAspect;
-                } else {
-                    drawSize.y = drawSize.x / frozenAspect;
-                }
+                const Vec2 drawSize = available;
                 const ImVec2 regionTopLeft = ImGui::GetCursorScreenPos();
                 const ImVec2 afterCanvas{regionTopLeft.x, regionTopLeft.y + available.y};
-                const ImVec2 topLeft{regionTopLeft.x + (viewportArea.x - drawSize.x) * 0.5f,
-                                     regionTopLeft.y + (viewportArea.y - drawSize.y) * 0.5f};
+                const ImVec2 topLeft = regionTopLeft;
                 ImGui::SetCursorScreenPos(topLeft);
                 if (!tab.projectionLoaded && tab.viewMode == ProjectionViewMode::GeneratedFull) {
                     tab.viewMode = ProjectionViewMode::Working;
@@ -784,14 +771,20 @@ void Application::DrawViewport() {
                 const float maskHeight = static_cast<float>(std::max(tab.mask.Height(), 1u));
                 renderer_.SetProjectionOffset(tab.projectionOffsetPixels.x / maskWidth,
                                               tab.projectionOffsetPixels.y / maskHeight);
-                renderer_.RenderViewport(static_cast<std::uint32_t>(drawSize.x),
-                                         static_cast<std::uint32_t>(drawSize.y), tab.camera);
                 const Vec2 displayUvMin = tab.displayTransform.MinimumUv();
-                const Vec2 displayUvMax = tab.displayTransform.MaximumUv();
+                const SquareCropFrame crop = CenteredSquare(drawSize);
+                const float displaySpan = tab.displayTransform.Span();
+                const Vec2 renderedUvMin{
+                    displayUvMin.x - crop.origin.x / crop.side * displaySpan,
+                    displayUvMin.y - crop.origin.y / crop.side * displaySpan};
+                const Vec2 renderedUvMax{
+                    displayUvMin.x + (drawSize.x - crop.origin.x) / crop.side * displaySpan,
+                    displayUvMin.y + (drawSize.y - crop.origin.y) / crop.side * displaySpan};
+                renderer_.RenderViewportRegion(static_cast<std::uint32_t>(drawSize.x),
+                                               static_cast<std::uint32_t>(drawSize.y), tab.camera,
+                                               renderedUvMin, renderedUvMax);
                 ImGui::Image(reinterpret_cast<ImTextureID>(renderer_.ViewportTexture()),
-                             ImVec2(drawSize.x, drawSize.y),
-                             ImVec2(displayUvMin.x, displayUvMin.y),
-                             ImVec2(displayUvMax.x, displayUvMax.y));
+                             ImVec2(drawSize.x, drawSize.y));
                 bool viewportHovered = ImGui::IsItemHovered();
 
                 const ImVec2 panelMin{regionTopLeft.x + available.x - panelSize.x - panelMargin,
@@ -832,7 +825,6 @@ void Application::DrawViewport() {
                 ImGui::SetCursorScreenPos(afterCanvas);
                 HandleViewportInput({topLeft.x, topLeft.y}, drawSize, &tab, viewportHovered);
                 drawLasso(topLeft);
-                const SquareCropFrame crop = CenteredSquare(drawSize);
                 const ImU32 color = IM_COL32(255, 196, 48, 255);
                 const ImVec2 minimum{topLeft.x + crop.origin.x, topLeft.y + crop.origin.y};
                 const ImVec2 maximum{minimum.x + crop.side, minimum.y + crop.side};
@@ -885,9 +877,10 @@ void Application::HandleViewportInput(const Vec2& topLeft, const Vec2& size, Pro
     const ImGuiIO& io = ImGui::GetIO();
     const Vec2 local{io.MousePos.x - topLeft.x, io.MousePos.y - topLeft.y};
     if (hovered && tab != nullptr) {
+        const SquareCropFrame crop = CenteredSquare(size);
         const Vec2 anchor{
-            std::clamp(local.x / std::max(size.x, 1.0f), 0.0f, 1.0f),
-            std::clamp(local.y / std::max(size.y, 1.0f), 0.0f, 1.0f)};
+            (local.x - crop.origin.x) / crop.side,
+            (local.y - crop.origin.y) / crop.side};
         if (io.MouseWheel != 0.0f) {
             tab->displayTransform.ZoomAt(
                 tab->displayTransform.zoom * std::pow(1.15f, io.MouseWheel), anchor);
@@ -895,9 +888,9 @@ void Application::HandleViewportInput(const Vec2& topLeft, const Vec2& size, Pro
         if (ImGui::IsMouseDragging(ImGuiMouseButton_Middle)) {
             if (io.KeyShift && tab->projectionLoaded) {
                 tab->projectionOffsetPixels.x += io.MouseDelta.x /
-                    (std::max(size.x, 1.0f) * tab->displayTransform.zoom) * tab->mask.Width();
+                    (crop.side * tab->displayTransform.zoom) * tab->mask.Width();
                 tab->projectionOffsetPixels.y += io.MouseDelta.y /
-                    (std::max(size.y, 1.0f) * tab->displayTransform.zoom) * tab->mask.Height();
+                    (crop.side * tab->displayTransform.zoom) * tab->mask.Height();
                 tab->projectionOffsetPixels.x = std::clamp(
                     tab->projectionOffsetPixels.x,
                     -static_cast<float>(tab->mask.Width()),
@@ -909,8 +902,7 @@ void Application::HandleViewportInput(const Vec2& topLeft, const Vec2& size, Pro
                 RefreshProjectionWorkingPreview(*tab);
             } else if (tab->displayTransform.zoom > ProjectionViewTransform::MinimumZoom) {
                 tab->displayTransform.PanByViewDelta(
-                    {io.MouseDelta.x / std::max(size.x, 1.0f),
-                     io.MouseDelta.y / std::max(size.y, 1.0f)});
+                    {io.MouseDelta.x / crop.side, io.MouseDelta.y / crop.side});
             }
         }
     }
@@ -960,13 +952,13 @@ void Application::HandleViewportInput(const Vec2& topLeft, const Vec2& size, Pro
     } else if (tab != nullptr && tab->viewMode == ProjectionViewMode::Working &&
                tab->projectionLoaded && !tab->applied &&
                !codex_.IsBusy(tab->id) && tab->mask.Width() != 0 && tab->mask.Height() != 0) {
-        const bool insideCrop = local.x >= 0.0f && local.y >= 0.0f &&
-            local.x <= size.x && local.y <= size.y;
-        const Vec2 viewUv{local.x / std::max(size.x, 1.0f),
-                          local.y / std::max(size.y, 1.0f)};
+        const SquareCropFrame crop = CenteredSquare(size);
+        const bool insideCrop = crop.Contains(local);
+        const Vec2 viewUv{(local.x - crop.origin.x) / crop.side,
+                          (local.y - crop.origin.y) / crop.side};
         const Vec2 sourceUv = tab->displayTransform.ViewToSource(viewUv);
         const float maskScale = static_cast<float>(tab->mask.Width()) /
-            std::max(size.x, 1.0f);
+            crop.side;
         if (!useLasso_) {
             const bool painting = ImGui::IsMouseDown(ImGuiMouseButton_Left) ||
                                   ImGui::IsMouseDown(ImGuiMouseButton_Right);
@@ -988,8 +980,8 @@ void Application::HandleViewportInput(const Vec2& topLeft, const Vec2& size, Pro
                 maskPoints.reserve(lassoPoints_.size());
                 for (const Vec2 point : lassoPoints_) {
                     const Vec2 pointViewUv{
-                        point.x / std::max(size.x, 1.0f),
-                        point.y / std::max(size.y, 1.0f)};
+                        (point.x - crop.origin.x) / crop.side,
+                        (point.y - crop.origin.y) / crop.side};
                     const Vec2 pointSourceUv = tab->displayTransform.ViewToSource(pointViewUv);
                     maskPoints.push_back({pointSourceUv.x * tab->mask.Width(),
                                           pointSourceUv.y * tab->mask.Height()});

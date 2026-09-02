@@ -887,7 +887,8 @@ bool Renderer::CreateViewportTargets(const std::uint32_t width, const std::uint3
 
 void Renderer::ComputeMatrices(const CameraState& camera, const float aspect,
                                float worldViewProjection[16], float world[16],
-                               float cameraPosition[4]) const {
+                               float cameraPosition[4], const Vec2& minimumUv,
+                               const Vec2& maximumUv) const {
     using namespace DirectX;
     const float cp = std::cos(camera.pitch);
     const XMVECTOR target = XMVectorSet(camera.target.x, camera.target.y, camera.target.z, 1.0f);
@@ -897,9 +898,21 @@ void Renderer::ComputeMatrices(const CameraState& camera, const float aspect,
         camera.target.z + std::cos(camera.yaw) * cp * camera.distance, 1.0f);
     const XMMATRIX worldMatrix = XMMatrixIdentity();
     const XMMATRIX view = XMMatrixLookAtLH(eye, target, XMVectorSet(0, 1, 0, 0));
-    const XMMATRIX projection = XMMatrixPerspectiveFovLH(
-        camera.fovDegrees * std::numbers::pi_v<float> / 180.0f, std::max(aspect, 0.01f),
-        std::max(camera.distance * 0.001f, 0.001f), std::max(camera.distance * 10.0f, 100.0f));
+    const float safeAspect = std::max(aspect, 0.01f);
+    const float nearPlane = std::max(camera.distance * 0.001f, 0.001f);
+    const float farPlane = std::max(camera.distance * 10.0f, 100.0f);
+    const float halfHeight = std::tan(
+        camera.fovDegrees * std::numbers::pi_v<float> / 360.0f) * nearPlane;
+    const float fullLeft = -halfHeight * safeAspect;
+    const float fullRight = halfHeight * safeAspect;
+    const float fullBottom = -halfHeight;
+    const float fullTop = halfHeight;
+    const float left = std::lerp(fullLeft, fullRight, minimumUv.x);
+    const float right = std::lerp(fullLeft, fullRight, maximumUv.x);
+    const float top = std::lerp(fullTop, fullBottom, minimumUv.y);
+    const float bottom = std::lerp(fullTop, fullBottom, maximumUv.y);
+    const XMMATRIX projection = XMMatrixPerspectiveOffCenterLH(
+        left, right, bottom, top, nearPlane, farPlane);
     XMFLOAT4X4 matrix{};
     XMStoreFloat4x4(&matrix, worldMatrix * view * projection);
     std::memcpy(worldViewProjection, &matrix, sizeof(matrix));
@@ -915,6 +928,12 @@ void Renderer::ComputeMatrices(const CameraState& camera, const float aspect,
 
 void Renderer::RenderViewport(const std::uint32_t width, const std::uint32_t height,
                               const CameraState& camera) {
+    RenderViewportRegion(width, height, camera, {0.0f, 0.0f}, {1.0f, 1.0f});
+}
+
+void Renderer::RenderViewportRegion(const std::uint32_t width, const std::uint32_t height,
+                                    const CameraState& camera, const Vec2& minimumUv,
+                                    const Vec2& maximumUv) {
     if (!device_ || width == 0 || height == 0) return;
     if (width != viewportWidth_ || height != viewportHeight_) {
         std::string ignored;
@@ -927,16 +946,20 @@ void Renderer::RenderViewport(const std::uint32_t width, const std::uint32_t hei
     context_->ClearRenderTargetView(idRtv_.Get(), zero.data());
     context_->ClearRenderTargetView(normalRtv_.Get(), zero.data());
     context_->ClearDepthStencilView(depthDsv_.Get(), D3D11_CLEAR_DEPTH, 1.0f, 0);
-    DrawScene(width, height, camera);
+    DrawScene(width, height, camera, minimumUv, maximumUv);
 }
 
 void Renderer::DrawScene(const std::uint32_t width, const std::uint32_t height,
-                         const CameraState& camera) {
+                         const CameraState& camera, const Vec2& minimumUv,
+                         const Vec2& maximumUv) {
     D3D11_MAPPED_SUBRESOURCE mapped{};
     if (SUCCEEDED(context_->Map(constants_.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped))) {
         ShaderConstants constants{};
-        ComputeMatrices(camera, static_cast<float>(width) / height, constants.worldViewProjection,
-                        constants.world, constants.cameraPosition);
+        const float viewSpanX = std::max(maximumUv.x - minimumUv.x, 0.0001f);
+        const float viewSpanY = std::max(maximumUv.y - minimumUv.y, 0.0001f);
+        const float sourceAspect = static_cast<float>(width) / height * viewSpanY / viewSpanX;
+        ComputeMatrices(camera, sourceAspect, constants.worldViewProjection,
+                        constants.world, constants.cameraPosition, minimumUv, maximumUv);
         constants.parameters[0] = static_cast<float>(width);
         constants.parameters[1] = static_cast<float>(height);
         const bool hasProjection = projectionSrv_ &&
@@ -946,11 +969,14 @@ void Renderer::DrawScene(const std::uint32_t width, const std::uint32_t height,
         constants.parameters[3] = shadingEnabled_ ? 1.0f : 0.0f;
         constants.sideFilter[0] = static_cast<float>(localSideFilter_);
         constants.sideFilter[1] = localCenterX_;
-        const float cropSide = static_cast<float>(std::min(width, height));
-        constants.projectionRegion[0] = (static_cast<float>(width) - cropSide) * 0.5f / width;
-        constants.projectionRegion[1] = (static_cast<float>(height) - cropSide) * 0.5f / height;
-        constants.projectionRegion[2] = cropSide / width;
-        constants.projectionRegion[3] = cropSide / height;
+        const float sourceCropWidth = sourceAspect > 1.0f ? 1.0f / sourceAspect : 1.0f;
+        const float sourceCropHeight = sourceAspect < 1.0f ? sourceAspect : 1.0f;
+        const float sourceCropX = (1.0f - sourceCropWidth) * 0.5f;
+        const float sourceCropY = (1.0f - sourceCropHeight) * 0.5f;
+        constants.projectionRegion[0] = (sourceCropX - minimumUv.x) / viewSpanX;
+        constants.projectionRegion[1] = (sourceCropY - minimumUv.y) / viewSpanY;
+        constants.projectionRegion[2] = sourceCropWidth / viewSpanX;
+        constants.projectionRegion[3] = sourceCropHeight / viewSpanY;
         constants.projectionTransform[0] = projectionOffset_[0];
         constants.projectionTransform[1] = projectionOffset_[1];
         std::memcpy(mapped.pData, &constants, sizeof(constants));

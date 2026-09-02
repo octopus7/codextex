@@ -85,6 +85,9 @@ public:
     void SetSelectedFaces(std::span<const std::uint8_t> selected);
 
     void RenderViewport(std::uint32_t width, std::uint32_t height, const CameraState& camera);
+    void RenderViewportRegion(std::uint32_t width, std::uint32_t height,
+                              const CameraState& camera, const Vec2& minimumUv,
+                              const Vec2& maximumUv);
     [[nodiscard]] ID3D11ShaderResourceView* ViewportTexture() const noexcept { return colorSrv_.Get(); }
     [[nodiscard]] ID3D11ShaderResourceView* WorkingTexture() const noexcept {
         return workingProjectionPreviewEnabled_ && workingProjectionPreviewSrv_
@@ -135,7 +138,9 @@ private:
                            std::string& error);
     bool ReadTexture(ID3D11Texture2D* texture, DXGI_FORMAT format, TextureImage& image,
                      std::string& error) const;
-    void DrawScene(std::uint32_t width, std::uint32_t height, const CameraState& camera);
+    void DrawScene(std::uint32_t width, std::uint32_t height, const CameraState& camera,
+                   const Vec2& minimumUv = {0.0f, 0.0f},
+                   const Vec2& maximumUv = {1.0f, 1.0f});
     bool RenderProjectionToTarget(ID3D11RenderTargetView* target, float maxAngleDegrees,
                                   std::string& error);
     bool EnsureWorkingProjectionPreview(std::string& error);
@@ -143,7 +148,9 @@ private:
     void UpdateVisibleIndexBuffer();
     void UpdateSelectionBuffer();
     void ComputeMatrices(const CameraState& camera, float aspect, float worldViewProjection[16],
-                         float world[16], float cameraPosition[4]) const;
+                         float world[16], float cameraPosition[4],
+                         const Vec2& minimumUv = {0.0f, 0.0f},
+                         const Vec2& maximumUv = {1.0f, 1.0f}) const;
 
     HWND window_{};
     Microsoft::WRL::ComPtr<ID3D11Device> device_;
