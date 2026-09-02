@@ -203,13 +203,34 @@ f 1/1 2/2 3/3 4/4
     mask.Resize(128, 128, true);
     renderer.SetMask(mask, 0);
 
+    REQUIRE(renderer.RefreshWorkingProjectionPreview(75, error));
+    REQUIRE(renderer.HasWorkingProjectionPreview());
+    codextex::TextureImage uncommittedWorking;
+    REQUIRE(renderer.ReadWorkingTexture(uncommittedWorking, error));
+    const std::size_t textureCenter = (8 * 16 + 8) * 4;
+    CHECK(uncommittedWorking.Pixels()[textureCenter] > 200);
+    CHECK(uncommittedWorking.Pixels()[textureCenter + 1] < 50);
+
+    codextex::CameraState mainCamera = camera;
+    mainCamera.yaw = 0.2f;
+    renderer.SetProjectionPreviewMode(codextex::ProjectionPreviewMode::Disabled);
+    renderer.RenderViewport(128, 128, mainCamera);
+    codextex::TextureImage sharedPreviewCapture;
+    codextex::Renderer::ProjectionFrame temporaryFrame;
+    REQUIRE(renderer.CaptureFrame(mainCamera, 128, 128, sharedPreviewCapture,
+                                  temporaryFrame, error));
+    const std::size_t viewportCenter = (64 * 128 + 64) * 4;
+    CHECK(sharedPreviewCapture.Pixels()[viewportCenter] < 50);
+    CHECK(sharedPreviewCapture.Pixels()[viewportCenter + 1] > 200);
+    CHECK(sharedPreviewCapture.Pixels()[viewportCenter + 2] < 50);
+    renderer.ActivateProjectionFrame(frame);
+
     renderer.SetOriginalTexturePreview(true);
     renderer.SetProjectionPreviewMode(codextex::ProjectionPreviewMode::Full);
     REQUIRE(renderer.BakeProjection(75, error));
 
     codextex::TextureImage baked;
     REQUIRE(renderer.ReadWorkingTexture(baked, error));
-    const std::size_t textureCenter = (8 * 16 + 8) * 4;
     CHECK(baked.Pixels()[textureCenter] < 50);
     CHECK(baked.Pixels()[textureCenter + 1] > 200);
     CHECK(baked.Pixels()[textureCenter + 2] < 50);
@@ -217,7 +238,6 @@ f 1/1 2/2 3/3 4/4
     renderer.RenderViewport(128, 128, camera);
     codextex::TextureImage workingCapture;
     REQUIRE(renderer.CaptureFrame(camera, workingCapture, error));
-    const std::size_t viewportCenter = (64 * 128 + 64) * 4;
     CHECK(workingCapture.Pixels()[viewportCenter] < 50);
     CHECK(workingCapture.Pixels()[viewportCenter + 1] > 200);
     CHECK(workingCapture.Pixels()[viewportCenter + 2] < 50);

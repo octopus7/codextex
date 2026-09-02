@@ -631,6 +631,7 @@ bool Renderer::SetWorkingTexture(const TextureImage& image, std::string& error) 
     if (!UploadRgbaTexture(image, true, workingTexture_, workingSrv_, &workingRtv_, error)) return false;
     textureWidth_ = image.Width();
     textureHeight_ = image.Height();
+    workingProjectionPreviewEnabled_ = false;
     originalTexturePreview_ = false;
     projectionPreviewMode_ = ProjectionPreviewMode::Disabled;
     return true;
@@ -653,6 +654,7 @@ bool Renderer::SetSourceAndWorkingTexture(const TextureImage& image, std::string
     workingRtv_ = std::move(workingRtv);
     textureWidth_ = image.Width();
     textureHeight_ = image.Height();
+    workingProjectionPreviewEnabled_ = false;
     originalTexturePreview_ = false;
     projectionPreviewMode_ = ProjectionPreviewMode::Disabled;
     return true;
@@ -968,7 +970,9 @@ void Renderer::DrawScene(const std::uint32_t width, const std::uint32_t height,
     ID3D11ShaderResourceView* nullResources[4]{};
 
     ID3D11ShaderResourceView* baseColor = originalTexturePreview_ && originalSrv_
-        ? originalSrv_.Get() : workingSrv_.Get();
+        ? originalSrv_.Get()
+        : (workingProjectionPreviewEnabled_ && workingProjectionPreviewSrv_
+            ? workingProjectionPreviewSrv_.Get() : workingSrv_.Get());
     if (vertexBuffer_ && visibleIndexBuffer_ && baseColor && !visibleIndices_.empty()) {
         context_->IASetVertexBuffers(0, 1, vertexBuffer_.GetAddressOf(), &stride, &offset);
         context_->IASetIndexBuffer(visibleIndexBuffer_.Get(), DXGI_FORMAT_R32_UINT, 0);
@@ -1112,20 +1116,82 @@ void Renderer::ClearFrozenFrame() {
     frozenCropX_ = frozenCropY_ = frozenCropSize_ = 0;
 }
 
-bool Renderer::BakeProjection(const float maxAngleDegrees, std::string& error) {
-    if (!workingRtv_ || !projectionSrv_ || !maskSrv_ || !frozenDepthSrv_ || !frozenIndexBuffer_) {
+bool Renderer::EnsureWorkingProjectionPreview(std::string& error) {
+    if (!workingTexture_) {
+        error = "Load a working texture before creating a projection preview.";
+        return false;
+    }
+    D3D11_TEXTURE2D_DESC workingDesc{};
+    workingTexture_->GetDesc(&workingDesc);
+    bool recreate = !workingProjectionPreviewTexture_;
+    if (!recreate) {
+        D3D11_TEXTURE2D_DESC previewDesc{};
+        workingProjectionPreviewTexture_->GetDesc(&previewDesc);
+        recreate = previewDesc.Width != workingDesc.Width ||
+            previewDesc.Height != workingDesc.Height || previewDesc.Format != workingDesc.Format;
+    }
+    if (!recreate) return true;
+
+    workingProjectionPreviewTexture_.Reset();
+    workingProjectionPreviewSrv_.Reset();
+    workingProjectionPreviewRtv_.Reset();
+    workingDesc.Usage = D3D11_USAGE_DEFAULT;
+    workingDesc.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET;
+    workingDesc.CPUAccessFlags = 0;
+    workingDesc.MiscFlags = 0;
+    HRESULT hr = device_->CreateTexture2D(&workingDesc, nullptr,
+                                           workingProjectionPreviewTexture_.GetAddressOf());
+    if (SUCCEEDED(hr)) {
+        hr = device_->CreateShaderResourceView(workingProjectionPreviewTexture_.Get(), nullptr,
+                                                workingProjectionPreviewSrv_.GetAddressOf());
+    }
+    if (SUCCEEDED(hr)) {
+        hr = device_->CreateRenderTargetView(workingProjectionPreviewTexture_.Get(), nullptr,
+                                              workingProjectionPreviewRtv_.GetAddressOf());
+    }
+    if (FAILED(hr)) {
+        workingProjectionPreviewTexture_.Reset();
+        workingProjectionPreviewSrv_.Reset();
+        workingProjectionPreviewRtv_.Reset();
+        error = HrError("Could not create the shared working projection preview", hr);
+        return false;
+    }
+    return true;
+}
+
+bool Renderer::RefreshWorkingProjectionPreview(const float maxAngleDegrees,
+                                                std::string& error) {
+    if (!EnsureWorkingProjectionPreview(error)) return false;
+    ID3D11ShaderResourceView* nullResources[4]{};
+    context_->PSSetShaderResources(0, 4, nullResources);
+    context_->CopyResource(workingProjectionPreviewTexture_.Get(), workingTexture_.Get());
+    workingProjectionPreviewEnabled_ = false;
+    if (!RenderProjectionToTarget(workingProjectionPreviewRtv_.Get(), maxAngleDegrees, error)) {
+        return false;
+    }
+    workingProjectionPreviewEnabled_ = true;
+    originalTexturePreview_ = false;
+    projectionPreviewMode_ = ProjectionPreviewMode::Disabled;
+    error.clear();
+    return true;
+}
+
+bool Renderer::RenderProjectionToTarget(ID3D11RenderTargetView* target,
+                                        const float maxAngleDegrees, std::string& error) {
+    if (!target || !projectionSrv_ || !maskSrv_ || !frozenDepthSrv_ || !frozenIndexBuffer_) {
         error = "Capture a view and provide a projection image and mask before baking.";
         return false;
     }
-    ID3D11ShaderResourceView* nullResources[3]{};
-    context_->PSSetShaderResources(0, 3, nullResources);
-    context_->OMSetRenderTargets(1, workingRtv_.GetAddressOf(), nullptr);
+    ID3D11ShaderResourceView* nullResources[4]{};
+    context_->PSSetShaderResources(0, 4, nullResources);
+    context_->OMSetRenderTargets(1, &target, nullptr);
     const D3D11_VIEWPORT viewport{0, 0, static_cast<float>(textureWidth_), static_cast<float>(textureHeight_), 0, 1};
     context_->RSSetViewports(1, &viewport);
     context_->RSSetState(rasterizer_.Get());
 
     D3D11_MAPPED_SUBRESOURCE mapped{};
     if (FAILED(context_->Map(constants_.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped))) {
+        context_->OMSetRenderTargets(0, nullptr, nullptr);
         error = "Could not update projection constants.";
         return false;
     }
@@ -1166,7 +1232,15 @@ bool Renderer::BakeProjection(const float maxAngleDegrees, std::string& error) {
     context_->DrawIndexed(frozenIndexCount_, 0, 0);
     context_->OMSetBlendState(nullptr, blendFactor, 0xffffffffu);
     context_->PSSetShaderResources(0, 3, nullResources);
+    context_->OMSetRenderTargets(0, nullptr, nullptr);
     context_->Flush();
+    error.clear();
+    return true;
+}
+
+bool Renderer::BakeProjection(const float maxAngleDegrees, std::string& error) {
+    if (!RenderProjectionToTarget(workingRtv_.Get(), maxAngleDegrees, error)) return false;
+    workingProjectionPreviewEnabled_ = false;
     originalTexturePreview_ = false;
     projectionPreviewMode_ = ProjectionPreviewMode::Disabled;
     error.clear();

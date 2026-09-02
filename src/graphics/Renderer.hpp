@@ -86,7 +86,10 @@ public:
 
     void RenderViewport(std::uint32_t width, std::uint32_t height, const CameraState& camera);
     [[nodiscard]] ID3D11ShaderResourceView* ViewportTexture() const noexcept { return colorSrv_.Get(); }
-    [[nodiscard]] ID3D11ShaderResourceView* WorkingTexture() const noexcept { return workingSrv_.Get(); }
+    [[nodiscard]] ID3D11ShaderResourceView* WorkingTexture() const noexcept {
+        return workingProjectionPreviewEnabled_ && workingProjectionPreviewSrv_
+            ? workingProjectionPreviewSrv_.Get() : workingSrv_.Get();
+    }
     [[nodiscard]] ID3D11ShaderResourceView* SessionPreviewTexture() const noexcept {
         return sessionPreviewSrv_.Get();
     }
@@ -99,6 +102,11 @@ public:
     bool CaptureFrame(const CameraState& camera, std::uint32_t width, std::uint32_t height,
                       TextureImage& image, ProjectionFrame& frame, std::string& error);
     void ActivateProjectionFrame(const ProjectionFrame& frame);
+    bool RefreshWorkingProjectionPreview(float maxAngleDegrees, std::string& error);
+    void ClearWorkingProjectionPreview() noexcept { workingProjectionPreviewEnabled_ = false; }
+    [[nodiscard]] bool HasWorkingProjectionPreview() const noexcept {
+        return workingProjectionPreviewEnabled_ && workingProjectionPreviewSrv_ != nullptr;
+    }
     bool BakeProjection(float maxAngleDegrees, std::string& error);
     bool ReadWorkingTexture(TextureImage& image, std::string& error) const;
 
@@ -128,6 +136,9 @@ private:
     bool ReadTexture(ID3D11Texture2D* texture, DXGI_FORMAT format, TextureImage& image,
                      std::string& error) const;
     void DrawScene(std::uint32_t width, std::uint32_t height, const CameraState& camera);
+    bool RenderProjectionToTarget(ID3D11RenderTargetView* target, float maxAngleDegrees,
+                                  std::string& error);
+    bool EnsureWorkingProjectionPreview(std::string& error);
     std::vector<std::uint32_t> ReadIdBuffer() const;
     void UpdateVisibleIndexBuffer();
     void UpdateSelectionBuffer();
@@ -184,6 +195,9 @@ private:
     Microsoft::WRL::ComPtr<ID3D11Texture2D> workingTexture_;
     Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> workingSrv_;
     Microsoft::WRL::ComPtr<ID3D11RenderTargetView> workingRtv_;
+    Microsoft::WRL::ComPtr<ID3D11Texture2D> workingProjectionPreviewTexture_;
+    Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> workingProjectionPreviewSrv_;
+    Microsoft::WRL::ComPtr<ID3D11RenderTargetView> workingProjectionPreviewRtv_;
     Microsoft::WRL::ComPtr<ID3D11Texture2D> originalTexture_;
     Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> originalSrv_;
     Microsoft::WRL::ComPtr<ID3D11Texture2D> projectionTexture_;
@@ -225,6 +239,7 @@ private:
     bool referenceAssetsVisible_{true};
     bool shadingEnabled_{};
     bool originalTexturePreview_{};
+    bool workingProjectionPreviewEnabled_{};
     std::array<float, 4> viewportBackgroundColor_{0.0467f, 0.0732f, 0.1070f, 1.0f};
     LocalSideFilter localSideFilter_{LocalSideFilter::Both};
     float localCenterX_{};

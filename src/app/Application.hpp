@@ -76,6 +76,7 @@ private:
     void UndoHiddenFaces();
     void ShowAllFaces();
     void ApplyMaskChange(ProjectionTab& tab);
+    bool RefreshProjectionWorkingPreview(ProjectionTab& tab);
     void Bake(ProjectionTab& tab);
     void UndoTexture();
     void RedoTexture();
@@ -144,6 +145,7 @@ private:
         std::optional<std::chrono::steady_clock::time_point> generationStartedAt;
     };
     std::vector<ProjectionTab> projectionTabs_;
+    std::optional<std::uint64_t> workingPreviewProjectionId_;
 
     struct TempFileInfo {
         std::filesystem::path path;
