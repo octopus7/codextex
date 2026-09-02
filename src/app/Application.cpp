@@ -421,6 +421,7 @@ void Application::DrawViewport() {
             Vec2 available{std::max(ImGui::GetContentRegionAvail().x, 1.0f),
                            std::max(ImGui::GetContentRegionAvail().y, 1.0f)};
             renderer_.SetOriginalTexturePreview(mainOriginalTexturePreview_);
+            renderer_.SetProjectionPreviewMode(ProjectionPreviewMode::Disabled);
             renderer_.RenderViewport(static_cast<std::uint32_t>(available.x),
                                      static_cast<std::uint32_t>(available.y), camera_);
             const ImVec2 topLeft = ImGui::GetCursorScreenPos();
@@ -495,12 +496,76 @@ void Application::DrawViewport() {
                 const ImVec2 topLeft{regionTopLeft.x + (available.x - drawSize.x) * 0.5f,
                                      regionTopLeft.y + (available.y - drawSize.y) * 0.5f};
                 ImGui::SetCursorScreenPos(topLeft);
-                renderer_.SetOriginalTexturePreview(false);
+                if (!tab.projectionLoaded && tab.viewMode == ProjectionViewMode::GeneratedFull) {
+                    tab.viewMode = ProjectionViewMode::Working;
+                }
+                const bool showOriginal = tab.viewMode == ProjectionViewMode::Original;
+                ProjectionPreviewMode previewMode = ProjectionPreviewMode::Disabled;
+                if (tab.projectionLoaded && tab.viewMode == ProjectionViewMode::GeneratedFull) {
+                    previewMode = ProjectionPreviewMode::Full;
+                } else if (tab.projectionLoaded && !tab.applied &&
+                           tab.viewMode == ProjectionViewMode::Working) {
+                    previewMode = ProjectionPreviewMode::Masked;
+                }
+                renderer_.SetOriginalTexturePreview(showOriginal);
+                renderer_.SetProjectionPreviewMode(previewMode);
                 renderer_.RenderViewport(static_cast<std::uint32_t>(drawSize.x),
                                          static_cast<std::uint32_t>(drawSize.y), tab.camera);
                 ImGui::Image(reinterpret_cast<ImTextureID>(renderer_.ViewportTexture()),
                              ImVec2(drawSize.x, drawSize.y));
-                const bool viewportHovered = ImGui::IsItemHovered();
+                bool viewportHovered = ImGui::IsItemHovered();
+                const ImVec2 afterImage = ImGui::GetCursorScreenPos();
+
+                constexpr char workingLabel[] = "작업";
+                constexpr char originalLabel[] = "원본";
+                constexpr char generatedLabel[] = "생성 전체";
+                const ImGuiStyle& style = ImGui::GetStyle();
+                const float padding = 9.0f * dpiScale_;
+                const float radioSize = ImGui::GetFrameHeight();
+                const float labelsWidth = ImGui::CalcTextSize(workingLabel).x +
+                    ImGui::CalcTextSize(originalLabel).x + ImGui::CalcTextSize(generatedLabel).x;
+                const float spacingWidth = style.ItemInnerSpacing.x * 3.0f +
+                    style.ItemSpacing.x * 2.0f;
+                const ImVec2 panelSize{padding * 2.0f + radioSize * 3.0f + labelsWidth +
+                                           spacingWidth,
+                                       padding * 2.0f + radioSize};
+                const ImVec2 panelMin{topLeft.x + drawSize.x - panelSize.x - 12.0f * dpiScale_,
+                                      topLeft.y + 12.0f * dpiScale_};
+                const ImVec2 panelMax{panelMin.x + panelSize.x, panelMin.y + panelSize.y};
+                ImDrawList* overlay = ImGui::GetWindowDrawList();
+                overlay->AddRectFilled(panelMin, panelMax, IM_COL32(18, 22, 28, 225),
+                                       9.0f * dpiScale_);
+                overlay->AddRect(panelMin, panelMax, IM_COL32(105, 125, 145, 210),
+                                 9.0f * dpiScale_, 0, 1.0f * dpiScale_);
+                ImGui::SetCursorScreenPos({panelMin.x + padding, panelMin.y + padding});
+                int selectedMode = static_cast<int>(tab.viewMode);
+                if (ImGui::RadioButton(workingLabel, selectedMode ==
+                                      static_cast<int>(ProjectionViewMode::Working))) {
+                    tab.viewMode = ProjectionViewMode::Working;
+                }
+                ImGui::SameLine();
+                if (ImGui::RadioButton(originalLabel, selectedMode ==
+                                      static_cast<int>(ProjectionViewMode::Original))) {
+                    tab.viewMode = ProjectionViewMode::Original;
+                }
+                ImGui::SameLine();
+                ImGui::BeginDisabled(!tab.projectionLoaded);
+                if (ImGui::RadioButton(generatedLabel, selectedMode ==
+                                      static_cast<int>(ProjectionViewMode::GeneratedFull))) {
+                    tab.viewMode = ProjectionViewMode::GeneratedFull;
+                }
+                ImGui::EndDisabled();
+                const ImVec2 mouse = ImGui::GetIO().MousePos;
+                const bool panelHovered = mouse.x >= panelMin.x && mouse.y >= panelMin.y &&
+                    mouse.x <= panelMax.x && mouse.y <= panelMax.y;
+                if (panelHovered && lassoActive_ &&
+                    ImGui::IsMouseReleased(ImGuiMouseButton_Left)) {
+                    lassoActive_ = false;
+                    lassoPoints_.clear();
+                }
+                viewportHovered = viewportHovered && !panelHovered &&
+                    tab.viewMode == ProjectionViewMode::Working;
+                ImGui::SetCursorScreenPos(afterImage);
                 HandleViewportInput({topLeft.x, topLeft.y}, drawSize, &tab, viewportHovered);
                 drawLasso(topLeft);
                 const SquareCropFrame crop = CenteredSquare(drawSize);
@@ -511,12 +576,12 @@ void Application::DrawViewport() {
                 draw->AddRect(minimum, maximum, color, 0.0f, 0, 2.0f * dpiScale_);
                 draw->AddText(ImVec2(minimum.x + 6.0f * dpiScale_, minimum.y + 5.0f * dpiScale_),
                               color, "Locked projection crop");
-                const ImVec2 mouse = ImGui::GetIO().MousePos;
                 const Vec2 localMouse{mouse.x - topLeft.x, mouse.y - topLeft.y};
                 const bool brushAvailable = tab.projectionLoaded && !tab.applied &&
                     !codex_.IsBusy(tab.id) && !useLasso_ &&
+                    tab.viewMode == ProjectionViewMode::Working &&
                     tab.mask.Width() != 0 && tab.mask.Height() != 0;
-                if (brushAvailable && ImGui::IsItemHovered() && crop.Contains(localMouse)) {
+                if (brushAvailable && viewportHovered && crop.Contains(localMouse)) {
                     const bool erasing = ImGui::IsMouseDown(ImGuiMouseButton_Right);
                     const ImU32 brushColor = erasing
                         ? IM_COL32(255, 85, 85, 235)
@@ -1179,7 +1244,9 @@ bool Application::OpenProjection(ProjectionTab& tab) {
     tab.projectionLoaded = true;
     tab.status = "External projection PNG loaded.";
     tab.statusIsError = false;
-    if (activeProjectionId_ == tab.id) renderer_.SetProjectionPreview(true);
+    if (activeProjectionId_ == tab.id) {
+        renderer_.SetProjectionPreviewMode(ProjectionPreviewMode::Masked);
+    }
     return true;
 }
 
@@ -1256,7 +1323,7 @@ bool Application::CreateProjectionTab(const bool generate) {
     renderer_.SetSelectedFaces(selectedFaces_);
     renderer_.SetHiddenFaces(hiddenFaces_);
     renderer_.SetReferenceAssetsVisible(referenceAssetsVisible_);
-    renderer_.SetProjectionPreview(false);
+    renderer_.SetProjectionPreviewMode(ProjectionPreviewMode::Disabled);
     renderer_.RenderViewport(renderer_.ViewportWidth(), renderer_.ViewportHeight(), camera_);
     ProjectionTab tab;
     tab.id = nextProjectionId_++;
@@ -1349,7 +1416,7 @@ void Application::ActivateMainViewport() {
     renderer_.SetSelectedFaces(selectedFaces_);
     renderer_.SetReferenceAssetsVisible(referenceAssetsVisible_);
     renderer_.SetLocalSideFilter(LocalSideFilter::Both);
-    renderer_.SetProjectionPreview(false);
+    renderer_.SetProjectionPreviewMode(ProjectionPreviewMode::Disabled);
     lassoActive_ = false;
     lassoPoints_.clear();
 }
@@ -1367,9 +1434,10 @@ void Application::ActivateProjectionTab(ProjectionTab& tab) {
     renderer_.SetMask(tab.mask, tab.featherRadius);
     std::string error;
     if (tab.projectionLoaded && renderer_.SetProjectionImage(tab.projectionImage, error)) {
-        renderer_.SetProjectionPreview(!tab.applied);
+        renderer_.SetProjectionPreviewMode(!tab.applied
+            ? ProjectionPreviewMode::Masked : ProjectionPreviewMode::Disabled);
     } else {
-        renderer_.SetProjectionPreview(false);
+        renderer_.SetProjectionPreviewMode(ProjectionPreviewMode::Disabled);
     }
     lassoActive_ = false;
     lassoPoints_.clear();
@@ -1389,7 +1457,7 @@ void Application::CloseProjectionTab(const std::uint64_t id) {
         renderer_.SetHiddenFaces(hiddenFaces_);
         renderer_.SetSelectedFaces(selectedFaces_);
         renderer_.SetReferenceAssetsVisible(referenceAssetsVisible_);
-        renderer_.SetProjectionPreview(false);
+        renderer_.SetProjectionPreviewMode(ProjectionPreviewMode::Disabled);
     }
 }
 
@@ -1407,7 +1475,7 @@ void Application::ClearProjectionTabs() {
     renderer_.SetSelectedFaces(selectedFaces_);
     renderer_.SetReferenceAssetsVisible(referenceAssetsVisible_);
     renderer_.SetLocalSideFilter(LocalSideFilter::Both);
-    renderer_.SetProjectionPreview(false);
+    renderer_.SetProjectionPreviewMode(ProjectionPreviewMode::Disabled);
 }
 
 void Application::FitCamera() {
@@ -1494,7 +1562,7 @@ void Application::Bake(ProjectionTab& tab) {
     tab.applied = true;
     tab.status = "Projection baked into the shared working texture.";
     tab.statusIsError = false;
-    renderer_.SetProjectionPreview(false);
+    renderer_.SetProjectionPreviewMode(ProjectionPreviewMode::Disabled);
     SetStatus("Projection baked into the working texture.");
 }
 
@@ -1557,7 +1625,9 @@ void Application::HandleCodexEvents() {
             tab->projectionLoaded = true;
             tab->status = "ImageGen result loaded; refine the mask before baking.";
             tab->statusIsError = false;
-            if (activeProjectionId_ == tab->id) renderer_.SetProjectionPreview(true);
+            if (activeProjectionId_ == tab->id) {
+                renderer_.SetProjectionPreviewMode(ProjectionPreviewMode::Masked);
+            }
         } else if (event.type == CodexEventType::MaskProposalReady && event.maskProposal) {
             tab->mask.Clear(false);
             tab->mask.ApplyProposal(*event.maskProposal);

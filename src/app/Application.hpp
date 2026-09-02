@@ -31,6 +31,7 @@ public:
 
 private:
     enum class EditMode { Navigate, Face };
+    enum class ProjectionViewMode { Working, Original, GeneratedFull };
 
     void DrawUi();
     void DrawMenuBar();
@@ -111,6 +112,7 @@ private:
         bool projectionLoaded{};
         bool referenceAssetsVisible{true};
         bool applied{};
+        ProjectionViewMode viewMode{ProjectionViewMode::Working};
         float brushRadius{28.0f};
         int featherRadius{16};
         float maxAngleDegrees{75.0f};

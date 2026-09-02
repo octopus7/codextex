@@ -68,6 +68,12 @@ Every viewport renders the same live working texture by default. The main viewpo
 alone has an `원본 텍스처 렌더링` checkbox in a rounded top-right viewport overlay;
 it temporarily displays the PNG as originally loaded without changing the shared
 working texture or affecting projection tabs.
+Projection painting tabs use a matching top-right overlay with three per-tab view
+modes: `작업` shows the shared working texture plus the current masked projection
+preview, `원본` shows only the PNG as loaded, and `생성 전체` ignores the mask and
+fully previews the generated image over the projectable primary-mesh surface.
+`생성 전체` remains disabled until a projection image is available, and generated
+pixels are never applied to inference reference assets in this preview.
 The viewport crop frame shows the exact centered square sent to ImageGen. Generated
 images and external projection PNGs must also be square; preview, mask editing,
 and UV baking are clipped and mapped back to that frame without stretching.

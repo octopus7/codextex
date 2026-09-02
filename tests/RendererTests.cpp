@@ -122,6 +122,117 @@ f 1/1 2/2 3/3 4/4
     renderer.Shutdown();
 }
 
+TEST_CASE("WARP projection viewport switches between masked original and full generated views") {
+    HiddenWindow window;
+    REQUIRE(window.Get() != nullptr);
+
+    codextex::Renderer renderer;
+    std::string error;
+    REQUIRE(renderer.Initialize(window.Get(), error, true));
+
+    const auto directory = std::filesystem::temp_directory_path() / "codextex-tests";
+    std::filesystem::create_directories(directory);
+    const auto objPath = directory / "projection-preview-modes.obj";
+    std::ofstream obj(objPath, std::ios::binary | std::ios::trunc);
+    obj << R"OBJ(
+v -1 -1 0
+v  1 -1 0
+v  1  1 0
+v -1  1 0
+vt 0 0
+vt 1 0
+vt 1 1
+vt 0 1
+f 1/1 2/2 3/3 4/4
+)OBJ";
+    obj.close();
+
+    codextex::Mesh mesh;
+    REQUIRE(mesh.LoadObj(objPath, error));
+    REQUIRE(renderer.SetMesh(mesh, error));
+
+    const auto solidImage = [](const std::uint8_t r, const std::uint8_t g,
+                               const std::uint8_t b) {
+        std::vector<std::uint8_t> pixels(16 * 16 * 4, 255);
+        for (std::size_t i = 0; i < pixels.size(); i += 4) {
+            pixels[i] = r;
+            pixels[i + 1] = g;
+            pixels[i + 2] = b;
+        }
+        codextex::TextureImage image;
+        image.Assign(16, 16, std::move(pixels));
+        return image;
+    };
+    const codextex::TextureImage original = solidImage(230, 20, 20);
+    const codextex::TextureImage working = solidImage(20, 20, 230);
+    const codextex::TextureImage generated = solidImage(20, 230, 20);
+    REQUIRE(renderer.SetSourceAndWorkingTexture(original, error));
+    REQUIRE(renderer.SetWorkingTexture(working, error));
+    REQUIRE(renderer.SetProjectionImage(generated, error));
+
+    const auto referenceObjPath = directory / "projection-preview-reference.obj";
+    std::ofstream referenceObj(referenceObjPath, std::ios::binary | std::ios::trunc);
+    referenceObj << R"OBJ(
+v -0.22 -0.22 0.2
+v  0.22 -0.22 0.2
+v  0.22  0.22 0.2
+v -0.22  0.22 0.2
+vt 0 0
+vt 1 0
+vt 1 1
+vt 0 1
+f 1/1 2/2 3/3 4/4
+)OBJ";
+    referenceObj.close();
+    codextex::Mesh referenceMesh;
+    REQUIRE(referenceMesh.LoadObj(referenceObjPath, error));
+    const codextex::TextureImage reference = solidImage(230, 210, 20);
+    REQUIRE(renderer.AddReferenceAsset(referenceMesh, reference, error));
+    renderer.SetReferenceAssetsVisible(true);
+
+    codextex::MaskImage emptyMask;
+    emptyMask.Resize(128, 128, false);
+    renderer.SetMask(emptyMask, 0);
+    codextex::CameraState camera;
+    camera.pitch = 0;
+    camera.distance = 3;
+
+    const auto pixelAt = [](const codextex::TextureImage& image, const std::uint32_t x,
+                            const std::uint32_t y) {
+        return (static_cast<std::size_t>(y) * image.Width() + x) * 4;
+    };
+
+    renderer.SetOriginalTexturePreview(false);
+    renderer.SetProjectionPreviewMode(codextex::ProjectionPreviewMode::Masked);
+    renderer.RenderViewport(128, 128, camera);
+    codextex::TextureImage maskedCapture;
+    REQUIRE(renderer.CaptureFrame(camera, maskedCapture, error));
+    const std::size_t surfacePixel = pixelAt(maskedCapture, 40, 64);
+    CHECK(maskedCapture.Pixels()[surfacePixel] < 50);
+    CHECK(maskedCapture.Pixels()[surfacePixel + 2] > 200);
+
+    renderer.SetOriginalTexturePreview(false);
+    renderer.SetProjectionPreviewMode(codextex::ProjectionPreviewMode::Full);
+    renderer.RenderViewport(128, 128, camera);
+    codextex::TextureImage fullCapture;
+    REQUIRE(renderer.CaptureFrame(camera, fullCapture, error));
+    CHECK(fullCapture.Pixels()[surfacePixel + 1] > 200);
+    CHECK(fullCapture.Pixels()[surfacePixel + 2] < 50);
+    const std::size_t referencePixel = pixelAt(fullCapture, 64, 64);
+    CHECK(fullCapture.Pixels()[referencePixel] > 200);
+    CHECK(fullCapture.Pixels()[referencePixel + 1] > 180);
+    CHECK(fullCapture.Pixels()[referencePixel + 2] < 50);
+
+    renderer.SetOriginalTexturePreview(true);
+    renderer.SetProjectionPreviewMode(codextex::ProjectionPreviewMode::Disabled);
+    renderer.RenderViewport(128, 128, camera);
+    codextex::TextureImage originalCapture;
+    REQUIRE(renderer.CaptureFrame(camera, originalCapture, error));
+    CHECK(originalCapture.Pixels()[surfacePixel] > 200);
+    CHECK(originalCapture.Pixels()[surfacePixel + 2] < 50);
+    renderer.Shutdown();
+}
+
 TEST_CASE("WARP exposes hidden geometry and bakes only the frozen visible surface") {
     HiddenWindow window;
     REQUIRE(window.Get() != nullptr);

@@ -30,6 +30,12 @@ enum class LocalSideFilter : std::uint32_t {
     IgnorePositiveX,
 };
 
+enum class ProjectionPreviewMode : std::uint32_t {
+    Disabled,
+    Masked,
+    Full,
+};
+
 class Renderer {
 public:
     struct ProjectionFrame {
@@ -92,7 +98,9 @@ public:
     std::vector<std::uint32_t> PickTrianglesInLasso(std::span<const Vec2> points) const;
     [[nodiscard]] bool HasFrozenFrame() const noexcept { return frozenDepth_ != nullptr; }
     void ClearFrozenFrame();
-    void SetProjectionPreview(bool enabled) noexcept { projectionPreview_ = enabled; }
+    void SetProjectionPreviewMode(ProjectionPreviewMode mode) noexcept {
+        projectionPreviewMode_ = mode;
+    }
 
     [[nodiscard]] ID3D11Device* Device() const noexcept { return device_.Get(); }
     [[nodiscard]] ID3D11DeviceContext* Context() const noexcept { return context_.Get(); }
@@ -204,7 +212,7 @@ private:
     std::uint32_t viewportHeight_{};
     std::uint32_t textureWidth_{};
     std::uint32_t textureHeight_{};
-    bool projectionPreview_{};
+    ProjectionPreviewMode projectionPreviewMode_{ProjectionPreviewMode::Disabled};
     bool referenceAssetsVisible_{true};
     bool shadingEnabled_{};
     bool originalTexturePreview_{};

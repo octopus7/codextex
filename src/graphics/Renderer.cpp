@@ -89,13 +89,16 @@ PSOutput PSMain(VSOutput input) {
         const float2 screenUv = input.position.xy / parameters.xy;
         const float2 projectionUv = (screenUv - projectionRegion.xy) / projectionRegion.zw;
         const bool insideCrop = all(projectionUv >= 0.0) && all(projectionUv <= 1.0);
-        const float mask = insideCrop ? maskPreview.SampleLevel(linearSampler, projectionUv, 0) : 0.0;
+        const bool fullProjection = parameters.z > 1.5;
+        const float mask = insideCrop
+            ? (fullProjection ? 1.0 : maskPreview.SampleLevel(linearSampler, projectionUv, 0) * 0.82)
+            : 0.0;
         const float3 projected = projectionPreview.SampleLevel(linearSampler, saturate(projectionUv), 0).rgb;
         const bool ignoreNegativeX = sideFilter.x > 0.5 && sideFilter.x < 1.5;
         const bool ignorePositiveX = sideFilter.x > 1.5;
         const bool sideAllowed = (!ignoreNegativeX || input.localPosition.x >= sideFilter.y) &&
                                  (!ignorePositiveX || input.localPosition.x <= sideFilter.y);
-        if (sideAllowed) color = lerp(color, projected, mask * 0.82);
+        if (sideAllowed) color = lerp(color, projected, mask);
     }
     if (selectedFaces[input.triangleId] != 0) {
         color = lerp(color, float3(1.0, 0.55, 0.05), 0.55);
@@ -890,7 +893,10 @@ void Renderer::RenderViewport(const std::uint32_t width, const std::uint32_t hei
                         constants.world, constants.cameraPosition);
         constants.parameters[0] = static_cast<float>(width);
         constants.parameters[1] = static_cast<float>(height);
-        constants.parameters[2] = projectionPreview_ && projectionSrv_ && maskSrv_ ? 1.0f : 0.0f;
+        const bool hasProjection = projectionSrv_ &&
+            (projectionPreviewMode_ == ProjectionPreviewMode::Full || maskSrv_);
+        constants.parameters[2] = hasProjection
+            ? static_cast<float>(projectionPreviewMode_) : 0.0f;
         constants.parameters[3] = shadingEnabled_ ? 1.0f : 0.0f;
         constants.sideFilter[0] = static_cast<float>(localSideFilter_);
         constants.sideFilter[1] = localCenterX_;
