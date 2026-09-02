@@ -420,13 +420,13 @@ void Application::DrawViewport() {
             ActivateMainViewport();
             Vec2 available{std::max(ImGui::GetContentRegionAvail().x, 1.0f),
                            std::max(ImGui::GetContentRegionAvail().y, 1.0f)};
+            renderer_.SetOriginalTexturePreview(mainOriginalTexturePreview_);
             renderer_.RenderViewport(static_cast<std::uint32_t>(available.x),
                                      static_cast<std::uint32_t>(available.y), camera_);
             const ImVec2 topLeft = ImGui::GetCursorScreenPos();
             ImGui::Image(reinterpret_cast<ImTextureID>(renderer_.ViewportTexture()),
                          ImVec2(available.x, available.y));
-            HandleViewportInput({topLeft.x, topLeft.y}, available, nullptr);
-            drawLasso(topLeft);
+            bool viewportHovered = ImGui::IsItemHovered();
             if (meshLoaded_) {
                 const SquareCropFrame crop = CenteredSquare(available);
                 const ImU32 color = IM_COL32(70, 210, 255, 255);
@@ -437,6 +437,35 @@ void Application::DrawViewport() {
                 draw->AddText(ImVec2(minimum.x + 6.0f * dpiScale_, minimum.y + 5.0f * dpiScale_),
                               color, "ImageGen 1:1 crop");
             }
+
+            const ImVec2 afterImage = ImGui::GetCursorScreenPos();
+            constexpr char originalLabel[] = "원본 텍스처 렌더링";
+            const ImGuiStyle& style = ImGui::GetStyle();
+            const float padding = 9.0f * dpiScale_;
+            const ImVec2 textSize = ImGui::CalcTextSize(originalLabel);
+            const float checkboxSize = ImGui::GetFrameHeight();
+            const ImVec2 panelSize{padding * 2.0f + checkboxSize + style.ItemInnerSpacing.x +
+                                       textSize.x,
+                                   padding * 2.0f + checkboxSize};
+            const ImVec2 panelMin{topLeft.x + available.x - panelSize.x - 12.0f * dpiScale_,
+                                  topLeft.y + 12.0f * dpiScale_};
+            const ImVec2 panelMax{panelMin.x + panelSize.x, panelMin.y + panelSize.y};
+            ImDrawList* overlay = ImGui::GetWindowDrawList();
+            overlay->AddRectFilled(panelMin, panelMax, IM_COL32(18, 22, 28, 225),
+                                   9.0f * dpiScale_);
+            overlay->AddRect(panelMin, panelMax, IM_COL32(105, 125, 145, 210),
+                             9.0f * dpiScale_, 0, 1.0f * dpiScale_);
+            ImGui::SetCursorScreenPos({panelMin.x + padding, panelMin.y + padding});
+            if (ImGui::Checkbox(originalLabel, &mainOriginalTexturePreview_)) {
+                renderer_.SetOriginalTexturePreview(mainOriginalTexturePreview_);
+            }
+            const ImVec2 mouse = ImGui::GetIO().MousePos;
+            const bool panelHovered = mouse.x >= panelMin.x && mouse.y >= panelMin.y &&
+                mouse.x <= panelMax.x && mouse.y <= panelMax.y;
+            viewportHovered = viewportHovered && !panelHovered;
+            ImGui::SetCursorScreenPos(afterImage);
+            HandleViewportInput({topLeft.x, topLeft.y}, available, nullptr, viewportHovered);
+            drawLasso(topLeft);
             ImGui::EndTabItem();
         }
 
@@ -466,11 +495,13 @@ void Application::DrawViewport() {
                 const ImVec2 topLeft{regionTopLeft.x + (available.x - drawSize.x) * 0.5f,
                                      regionTopLeft.y + (available.y - drawSize.y) * 0.5f};
                 ImGui::SetCursorScreenPos(topLeft);
+                renderer_.SetOriginalTexturePreview(false);
                 renderer_.RenderViewport(static_cast<std::uint32_t>(drawSize.x),
                                          static_cast<std::uint32_t>(drawSize.y), tab.camera);
                 ImGui::Image(reinterpret_cast<ImTextureID>(renderer_.ViewportTexture()),
                              ImVec2(drawSize.x, drawSize.y));
-                HandleViewportInput({topLeft.x, topLeft.y}, drawSize, &tab);
+                const bool viewportHovered = ImGui::IsItemHovered();
+                HandleViewportInput({topLeft.x, topLeft.y}, drawSize, &tab, viewportHovered);
                 drawLasso(topLeft);
                 const SquareCropFrame crop = CenteredSquare(drawSize);
                 const ImU32 color = IM_COL32(255, 196, 48, 255);
@@ -516,9 +547,9 @@ void Application::DrawViewport() {
     ImGui::End();
 }
 
-void Application::HandleViewportInput(const Vec2& topLeft, const Vec2& size, ProjectionTab* tab) {
+void Application::HandleViewportInput(const Vec2& topLeft, const Vec2& size, ProjectionTab* tab,
+                                      const bool hovered) {
     const ImGuiIO& io = ImGui::GetIO();
-    const bool hovered = ImGui::IsItemHovered();
     const Vec2 local{io.MousePos.x - topLeft.x, io.MousePos.y - topLeft.y};
     if (hovered && tab == nullptr && editMode_ == EditMode::Navigate) {
         if (ImGui::IsMouseDragging(ImGuiMouseButton_Right)) {
@@ -1105,12 +1136,14 @@ bool Application::OpenTexture() {
     if (path.empty()) return false;
     TextureImage image;
     std::string error;
-    if (!image.LoadPng(path, error) || !renderer_.SetWorkingTexture(image, error)) {
+    if (!image.LoadPng(path, error) ||
+        !renderer_.SetSourceAndWorkingTexture(image, error)) {
         SetStatus(error, true);
         return false;
     }
     ClearProjectionTabs();
     sourceTexture_ = std::move(image);
+    mainOriginalTexturePreview_ = false;
     texturePath_ = path;
     textureLoaded_ = true;
     dirty_ = false;
@@ -1212,7 +1245,6 @@ bool Application::SaveTexture(const bool choosePath) {
         return false;
     }
     texturePath_ = path;
-    sourceTexture_ = std::move(current);
     dirty_ = false;
     SetStatus("Texture PNG saved. No OBJ or project file was written.");
     return true;

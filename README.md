@@ -64,6 +64,10 @@ The viewport starts in an unlit Base Color mode so PNG texels are displayed
 without lighting multiplication. `Neutral shading` is an optional display and
 capture aid. The first-run docking layout reserves the main central area for the
 3D viewport; `Fit primary view (F)` recenters and tightly frames the editable OBJ.
+Every viewport renders the same live working texture by default. The main viewport
+alone has an `원본 텍스처 렌더링` checkbox in a rounded top-right viewport overlay;
+it temporarily displays the PNG as originally loaded without changing the shared
+working texture or affecting projection tabs.
 The viewport crop frame shows the exact centered square sent to ImageGen. Generated
 images and external projection PNGs must also be square; preview, mask editing,
 and UV baking are clipped and mapped back to that frame without stretching.

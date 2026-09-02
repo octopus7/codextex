@@ -56,6 +56,72 @@ TEST_CASE("D3D11 WARP initializes viewport bake and GPU mask shaders") {
     renderer.Shutdown();
 }
 
+TEST_CASE("WARP viewport shares the working texture and can preview the loaded original") {
+    HiddenWindow window;
+    REQUIRE(window.Get() != nullptr);
+
+    codextex::Renderer renderer;
+    std::string error;
+    REQUIRE(renderer.Initialize(window.Get(), error, true));
+
+    const auto directory = std::filesystem::temp_directory_path() / "codextex-tests";
+    std::filesystem::create_directories(directory);
+    const auto objPath = directory / "original-preview-quad.obj";
+    std::ofstream obj(objPath, std::ios::binary | std::ios::trunc);
+    obj << R"OBJ(
+v -1 -1 0
+v  1 -1 0
+v  1  1 0
+v -1  1 0
+vt 0 0
+vt 1 0
+vt 1 1
+vt 0 1
+f 1/1 2/2 3/3 4/4
+)OBJ";
+    obj.close();
+
+    codextex::Mesh mesh;
+    REQUIRE(mesh.LoadObj(objPath, error));
+    REQUIRE(renderer.SetMesh(mesh, error));
+
+    std::vector<std::uint8_t> originalPixels(4 * 4 * 4, 255);
+    std::vector<std::uint8_t> workingPixels(4 * 4 * 4, 255);
+    for (std::size_t i = 0; i < originalPixels.size(); i += 4) {
+        originalPixels[i] = 230;
+        originalPixels[i + 1] = 20;
+        originalPixels[i + 2] = 20;
+        workingPixels[i] = 20;
+        workingPixels[i + 1] = 20;
+        workingPixels[i + 2] = 230;
+    }
+    codextex::TextureImage original;
+    codextex::TextureImage working;
+    original.Assign(4, 4, originalPixels);
+    working.Assign(4, 4, workingPixels);
+    REQUIRE(renderer.SetSourceAndWorkingTexture(original, error));
+    REQUIRE(renderer.SetWorkingTexture(working, error));
+
+    codextex::CameraState camera;
+    camera.pitch = 0;
+    camera.distance = 3;
+    renderer.SetOriginalTexturePreview(false);
+    renderer.RenderViewport(64, 64, camera);
+    codextex::TextureImage workingCapture;
+    REQUIRE(renderer.CaptureFrame(camera, workingCapture, error));
+    const std::size_t center = (32 * 64 + 32) * 4;
+    CHECK(workingCapture.Pixels()[center] < 50);
+    CHECK(workingCapture.Pixels()[center + 2] > 200);
+
+    renderer.SetOriginalTexturePreview(true);
+    renderer.RenderViewport(64, 64, camera);
+    codextex::TextureImage originalCapture;
+    REQUIRE(renderer.CaptureFrame(camera, originalCapture, error));
+    CHECK(originalCapture.Pixels()[center] > 200);
+    CHECK(originalCapture.Pixels()[center + 2] < 50);
+    renderer.Shutdown();
+}
+
 TEST_CASE("WARP exposes hidden geometry and bakes only the frozen visible surface") {
     HiddenWindow window;
     REQUIRE(window.Get() != nullptr);

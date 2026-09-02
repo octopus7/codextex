@@ -624,6 +624,26 @@ bool Renderer::SetWorkingTexture(const TextureImage& image, std::string& error) 
     return true;
 }
 
+bool Renderer::SetSourceAndWorkingTexture(const TextureImage& image, std::string& error) {
+    ComPtr<ID3D11Texture2D> originalTexture;
+    ComPtr<ID3D11ShaderResourceView> originalSrv;
+    ComPtr<ID3D11Texture2D> workingTexture;
+    ComPtr<ID3D11ShaderResourceView> workingSrv;
+    ComPtr<ID3D11RenderTargetView> workingRtv;
+    if (!UploadRgbaTexture(image, false, originalTexture, originalSrv, nullptr, error) ||
+        !UploadRgbaTexture(image, true, workingTexture, workingSrv, &workingRtv, error)) {
+        return false;
+    }
+    originalTexture_ = std::move(originalTexture);
+    originalSrv_ = std::move(originalSrv);
+    workingTexture_ = std::move(workingTexture);
+    workingSrv_ = std::move(workingSrv);
+    workingRtv_ = std::move(workingRtv);
+    textureWidth_ = image.Width();
+    textureHeight_ = image.Height();
+    return true;
+}
+
 bool Renderer::SetProjectionImage(const TextureImage& image, std::string& error) {
     return UploadRgbaTexture(image, false, projectionTexture_, projectionSrv_, nullptr, error);
 }
@@ -895,11 +915,13 @@ void Renderer::RenderViewport(const std::uint32_t width, const std::uint32_t hei
     context_->PSSetSamplers(0, 1, sampler_.GetAddressOf());
     ID3D11ShaderResourceView* nullResources[4]{};
 
-    if (vertexBuffer_ && visibleIndexBuffer_ && workingSrv_ && !visibleIndices_.empty()) {
+    ID3D11ShaderResourceView* baseColor = originalTexturePreview_ && originalSrv_
+        ? originalSrv_.Get() : workingSrv_.Get();
+    if (vertexBuffer_ && visibleIndexBuffer_ && baseColor && !visibleIndices_.empty()) {
         context_->IASetVertexBuffers(0, 1, vertexBuffer_.GetAddressOf(), &stride, &offset);
         context_->IASetIndexBuffer(visibleIndexBuffer_.Get(), DXGI_FORMAT_R32_UINT, 0);
         context_->PSSetShader(viewportPs_.Get(), nullptr, 0);
-        ID3D11ShaderResourceView* resources[]{workingSrv_.Get(), selectionSrv_.Get(),
+        ID3D11ShaderResourceView* resources[]{baseColor, selectionSrv_.Get(),
                                               projectionSrv_.Get(), maskSrv_.Get()};
         context_->PSSetShaderResources(0, 4, resources);
         context_->DrawIndexed(static_cast<UINT>(visibleIndices_.size()), 0, 0);

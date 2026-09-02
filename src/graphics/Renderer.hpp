@@ -56,6 +56,7 @@ public:
     void Present();
 
     bool SetMesh(const Mesh& mesh, std::string& error);
+    bool SetSourceAndWorkingTexture(const TextureImage& image, std::string& error);
     bool SetWorkingTexture(const TextureImage& image, std::string& error);
     bool SetProjectionImage(const TextureImage& image, std::string& error);
     bool SetSessionPreviewImage(const TextureImage& image, std::string& error);
@@ -65,6 +66,7 @@ public:
     void SetReferenceAssetsVisible(bool visible) noexcept { referenceAssetsVisible_ = visible; }
     [[nodiscard]] bool ReferenceAssetsVisible() const noexcept { return referenceAssetsVisible_; }
     void SetShadingEnabled(bool enabled) noexcept { shadingEnabled_ = enabled; }
+    void SetOriginalTexturePreview(bool enabled) noexcept { originalTexturePreview_ = enabled; }
     void SetLocalSideFilter(LocalSideFilter filter) noexcept { localSideFilter_ = filter; }
     void SetMask(const MaskImage& mask, int featherRadius);
     void SetHiddenFaces(std::span<const std::uint8_t> hidden);
@@ -165,6 +167,8 @@ private:
     Microsoft::WRL::ComPtr<ID3D11Texture2D> workingTexture_;
     Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> workingSrv_;
     Microsoft::WRL::ComPtr<ID3D11RenderTargetView> workingRtv_;
+    Microsoft::WRL::ComPtr<ID3D11Texture2D> originalTexture_;
+    Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> originalSrv_;
     Microsoft::WRL::ComPtr<ID3D11Texture2D> projectionTexture_;
     Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> projectionSrv_;
     Microsoft::WRL::ComPtr<ID3D11Texture2D> sessionPreviewTexture_;
@@ -203,6 +207,7 @@ private:
     bool projectionPreview_{};
     bool referenceAssetsVisible_{true};
     bool shadingEnabled_{};
+    bool originalTexturePreview_{};
     LocalSideFilter localSideFilter_{LocalSideFilter::Both};
     float localCenterX_{};
 };

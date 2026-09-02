@@ -40,7 +40,8 @@ private:
     void DrawSessionTemp();
     void HandleCodexEvents();
     struct ProjectionTab;
-    void HandleViewportInput(const Vec2& topLeft, const Vec2& size, ProjectionTab* tab);
+    void HandleViewportInput(const Vec2& topLeft, const Vec2& size, ProjectionTab* tab,
+                             bool hovered);
     void ApplyDpiScale(float scale);
 
     bool OpenObj();
@@ -142,6 +143,7 @@ private:
     bool dirty_{};
     bool referenceAssetsVisible_{true};
     bool shadingEnabled_{};
+    bool mainOriginalTexturePreview_{};
     bool dockLayoutInitialized_{};
     bool imguiBackendsInitialized_{};
     float dpiScale_{1.0f};
