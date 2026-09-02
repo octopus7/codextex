@@ -69,20 +69,24 @@ near-black. `Background color` in `Viewport display` changes the solid color for
 every viewport and for subsequent ImageGen captures without affecting mesh or
 reference textures.
 Every viewport renders the same live working texture by default. The main viewport
-alone has an `원본 텍스처 렌더링` checkbox in a rounded top-right viewport overlay;
+alone has a localized `Original texture` checkbox in a rounded top-right viewport overlay;
 it temporarily displays the PNG as originally loaded without changing the shared
 working texture or affecting projection tabs.
 Projection painting tabs use a matching top-right overlay with three per-tab view
-modes: `작업` shows the shared working texture plus the current masked projection
-preview, `원본` shows only the PNG as loaded, and `생성 전체` ignores the mask and
+modes: `Working` shows the shared working texture plus the current masked projection
+preview, `Original` shows only the PNG as loaded, and `Generated Image` ignores the mask and
 fully previews the generated image over the projectable primary-mesh surface.
-`생성 전체` remains disabled until a projection image is available, and generated
+`Generated Image` remains disabled until a projection image is available, and generated
 pixels are never applied to inference reference assets in this preview.
 The viewport crop frame shows the exact centered square sent to ImageGen. Generated
 images and external projection PNGs must also be square; preview, mask editing,
 and UV baking are clipped and mapped back to that frame without stretching.
-The UI loads a Windows Korean font for IME-composed Korean prompt input and keeps
-the completed text as UTF-8 when it is sent to Codex.
+The UI supports English, Japanese, and Korean. On first launch it follows the
+Windows user locale and falls back to English for unsupported locales. A choice
+under `Settings > Language` is saved immediately and takes precedence on later
+launches; its entries always remain `English`, `日本語`, and `한국어` in their own
+scripts. Japanese and Korean Windows fonts are merged into the UI atlas so every
+entry remains legible, and IME-composed prompt text stays UTF-8 when sent to Codex.
 
 The main viewport offers model and reasoning-effort selectors populated from the
 App Server's `model/list` response. With no settings file, the built-in selection

@@ -4,6 +4,7 @@
 #include <Windows.h>
 
 #include <filesystem>
+#include <fstream>
 
 namespace {
 
@@ -25,13 +26,14 @@ TEST_CASE("Missing app settings use Sol medium without creating a file") {
     CHECK_FALSE(loaded);
     CHECK(settings.model == "gpt-5.6-sol");
     CHECK(settings.reasoningEffort == "medium");
+    CHECK(settings.language.empty());
     CHECK_FALSE(std::filesystem::exists(path));
 }
 
 TEST_CASE("App settings persist beside the requested binary path") {
     const auto path = SettingsPath(L"settings-roundtrip");
     std::filesystem::create_directories(path.parent_path());
-    const codextex::CodexRequestSettings written{"gpt-5.6-luna", "low"};
+    const codextex::CodexRequestSettings written{"gpt-5.6-luna", "low", "ja"};
     std::string error;
     REQUIRE(codextex::SaveCodexRequestSettings(path, written, error));
 
@@ -41,4 +43,21 @@ TEST_CASE("App settings persist beside the requested binary path") {
     CHECK(loaded);
     CHECK(loadedSettings.model == "gpt-5.6-luna");
     CHECK(loadedSettings.reasoningEffort == "low");
+    CHECK(loadedSettings.language == "ja");
+}
+
+TEST_CASE("Legacy app settings without a UI language remain loadable") {
+    const auto path = SettingsPath(L"settings-legacy");
+    std::filesystem::create_directories(path.parent_path());
+    {
+        std::ofstream stream(path, std::ios::binary | std::ios::trunc);
+        stream << R"({"codex":{"model":"gpt-5.6-sol","reasoningEffort":"medium"}})";
+    }
+    std::string error;
+
+    codextex::CodexRequestSettings loadedSettings;
+    bool loaded = false;
+    REQUIRE(codextex::LoadCodexRequestSettings(path, loadedSettings, loaded, error));
+    CHECK(loaded);
+    CHECK(loadedSettings.language.empty());
 }

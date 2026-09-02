@@ -38,6 +38,12 @@ bool LoadCodexRequestSettings(const std::filesystem::path& path,
         }
         settings.model = model;
         settings.reasoningEffort = effort;
+        if (const auto ui = document.find("ui"); ui != document.end() && ui->is_object()) {
+            if (const auto language = ui->find("language");
+                language != ui->end() && language->is_string()) {
+                settings.language = language->get<std::string>();
+            }
+        }
         loadedFromDisk = true;
         return true;
     } catch (const std::exception& exception) {
@@ -64,6 +70,7 @@ bool SaveCodexRequestSettings(const std::filesystem::path& path,
         const nlohmann::json document = {
             {"codex", {{"model", settings.model},
                        {"reasoningEffort", settings.reasoningEffort}}},
+            {"ui", {{"language", settings.language}}},
         };
         std::ofstream stream(temporary, std::ios::binary | std::ios::trunc);
         if (!stream) {

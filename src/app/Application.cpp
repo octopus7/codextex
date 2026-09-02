@@ -27,21 +27,20 @@ namespace {
 
 constexpr wchar_t kWindowClass[] = L"CodexTexWindow";
 constexpr std::size_t kUndoLimit = 8;
-constexpr ImWchar kKoreanGlyphRanges[] = {
-    0x0020, 0x00ff, // Basic Latin and Latin-1
-    0x1100, 0x11ff, // Hangul Jamo
-    0x2000, 0x206f, // General punctuation
-    0x3000, 0x30ff, // CJK punctuation and symbols
-    0x3130, 0x318f, // Hangul Compatibility Jamo
-    0xa960, 0xa97f, // Hangul Jamo Extended-A
-    0xac00, 0xd7a3, // All modern precomposed Hangul syllables
-    0xd7b0, 0xd7ff, // Hangul Jamo Extended-B
-    0,
-};
-
 std::string Narrow(const std::filesystem::path& path) {
     const auto value = path.u8string();
     return {reinterpret_cast<const char*>(value.data()), value.size()};
+}
+
+std::wstring Wide(const std::string_view utf8) {
+    if (utf8.empty()) return {};
+    const int length = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, utf8.data(),
+                                            static_cast<int>(utf8.size()), nullptr, 0);
+    if (length <= 0) return {};
+    std::wstring result(static_cast<std::size_t>(length), L'\0');
+    MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, utf8.data(),
+                        static_cast<int>(utf8.size()), result.data(), length);
+    return result;
 }
 
 std::filesystem::path ExecutableDirectory() {
@@ -52,13 +51,15 @@ std::filesystem::path ExecutableDirectory() {
     return std::filesystem::path(path.data()).parent_path();
 }
 
-std::string ElapsedLabel(const std::chrono::steady_clock::time_point startedAt) {
+std::string ElapsedLabel(const std::chrono::steady_clock::time_point startedAt,
+                         const std::string_view prefix) {
     const auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(
         std::chrono::steady_clock::now() - startedAt).count();
     const auto minutes = elapsed / 60;
     const auto seconds = elapsed % 60;
     std::array<char, 64> label{};
-    std::snprintf(label.data(), label.size(), "Generating %lld:%02lld",
+    std::snprintf(label.data(), label.size(), "%.*s %lld:%02lld",
+                  static_cast<int>(prefix.size()), prefix.data(),
                   static_cast<long long>(minutes), static_cast<long long>(seconds));
     return label.data();
 }
@@ -136,7 +137,7 @@ bool SupportsEffort(const CodexModelInfo& model, const std::string& effort) {
         [&effort](const CodexReasoningOption& option) { return option.value == effort; });
 }
 
-bool LoadUiFont(ImGuiIO& io, const float dpiScale) {
+bool LoadUiFont(ImGuiIO& io, const float dpiScale, const UiLanguage language) {
     std::array<wchar_t, MAX_PATH> windowsDirectory{};
     const UINT length = GetWindowsDirectoryW(windowsDirectory.data(),
                                              static_cast<UINT>(windowsDirectory.size()));
@@ -144,23 +145,58 @@ bool LoadUiFont(ImGuiIO& io, const float dpiScale) {
 
     const std::filesystem::path fontsDirectory =
         std::filesystem::path(windowsDirectory.data()) / L"Fonts";
-    constexpr std::array<const wchar_t*, 3> candidates{
+    constexpr std::array<const wchar_t*, 3> englishCandidates{
+        L"segoeui.ttf", L"arial.ttf", L"tahoma.ttf"};
+    constexpr std::array<const wchar_t*, 3> japaneseCandidates{
+        L"YuGothM.ttc", L"meiryo.ttc", L"msgothic.ttc"};
+    constexpr std::array<const wchar_t*, 3> koreanCandidates{
         L"malgun.ttf", L"malgunsl.ttf", L"gulim.ttc"};
-    for (const wchar_t* filename : candidates) {
-        const std::filesystem::path fontPath = fontsDirectory / filename;
-        std::error_code fileError;
-        if (!std::filesystem::is_regular_file(fontPath, fileError)) continue;
-        const std::string utf8Path = Narrow(fontPath);
-        if (ImFont* font = io.Fonts->AddFontFromFileTTF(
-                utf8Path.c_str(), 17.0f * dpiScale, nullptr, kKoreanGlyphRanges)) {
-            io.FontDefault = font;
-            return true;
+    const auto addFirstAvailable = [&](const auto& candidates, const ImWchar* ranges,
+                                       const bool merge) -> ImFont* {
+        for (const wchar_t* filename : candidates) {
+            const std::filesystem::path fontPath = fontsDirectory / filename;
+            std::error_code fileError;
+            if (!std::filesystem::is_regular_file(fontPath, fileError)) continue;
+            const std::string utf8Path = Narrow(fontPath);
+            ImFontConfig config{};
+            config.MergeMode = merge;
+            config.PixelSnapH = true;
+            if (ImFont* font = io.Fonts->AddFontFromFileTTF(
+                    utf8Path.c_str(), 17.0f * dpiScale, &config, ranges)) {
+                return font;
+            }
         }
+        return nullptr;
+    };
+
+    ImFont* base = addFirstAvailable(englishCandidates, io.Fonts->GetGlyphRangesDefault(), false);
+    if (!base) {
+        ImFontConfig fallbackConfig{};
+        fallbackConfig.SizePixels = 17.0f * dpiScale;
+        base = io.Fonts->AddFontDefault(&fallbackConfig);
     }
-    ImFontConfig fallbackConfig{};
-    fallbackConfig.SizePixels = 13.0f * dpiScale;
-    io.FontDefault = io.Fonts->AddFontDefault(&fallbackConfig);
-    return false;
+    io.FontDefault = base;
+
+    // Both CJK fonts stay in the atlas so the Language submenu can always show
+    // 日本語 and 한국어 in their native scripts, regardless of the active UI language.
+    bool japaneseLoaded = false;
+    bool koreanLoaded = false;
+    const auto addJapanese = [&] {
+        japaneseLoaded = addFirstAvailable(japaneseCandidates,
+                                            io.Fonts->GetGlyphRangesJapanese(), true) != nullptr;
+    };
+    const auto addKorean = [&] {
+        koreanLoaded = addFirstAvailable(koreanCandidates,
+                                          io.Fonts->GetGlyphRangesKorean(), true) != nullptr;
+    };
+    if (language == UiLanguage::Korean) {
+        addKorean();
+        addJapanese();
+    } else {
+        addJapanese();
+        addKorean();
+    }
+    return base != nullptr && japaneseLoaded && koreanLoaded;
 }
 
 } // namespace
@@ -195,12 +231,32 @@ bool Application::Initialize(HINSTANCE instance, const int showCommand, std::str
     }
     renderer_.SetViewportBackgroundColor(viewportBackgroundColor_);
 
+    const auto executableDirectory = ExecutableDirectory();
+    settingsPath_ = executableDirectory.empty()
+        ? std::filesystem::path{}
+        : executableDirectory / L"CodexTex.settings.json";
+    std::string settingsError;
+    const bool settingsReadable = !settingsPath_.empty() &&
+        LoadCodexRequestSettings(settingsPath_, codexSettings_,
+                                 settingsLoadedFromDisk_, settingsError);
+    persistedSettings_ = codexSettings_;
+    if (!settingsReadable) {
+        uiLanguage_ = UiLanguage::English;
+        settingsMessage_ = settingsError.empty()
+            ? "Could not locate the executable directory for Codex settings."
+            : settingsError;
+    } else {
+        uiLanguage_ = ResolveUiLanguage(codexSettings_.language, settingsLoadedFromDisk_,
+                                        DetectSystemUiLanguage());
+    }
+    codexSettings_.language = std::string(UiLanguageCode(uiLanguage_));
+
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
     ImGuiIO& io = ImGui::GetIO();
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard | ImGuiConfigFlags_DockingEnable;
     dpiScale_ = std::clamp(ImGui_ImplWin32_GetDpiScaleForHwnd(window_), 1.0f, 4.0f);
-    const bool koreanFontLoaded = LoadUiFont(io, dpiScale_);
+    const bool uiFontLoaded = LoadUiFont(io, dpiScale_, uiLanguage_);
     ImGui::StyleColorsDark();
     ImGui::GetStyle().WindowRounding = 4.0f;
     ImGui::GetStyle().ScaleAllSizes(dpiScale_);
@@ -211,18 +267,6 @@ bool Application::Initialize(HINSTANCE instance, const int showCommand, std::str
     sessionDirectory_ = CreateSessionDirectory();
     std::error_code directoryError;
     std::filesystem::create_directories(sessionDirectory_, directoryError);
-    const auto executableDirectory = ExecutableDirectory();
-    settingsPath_ = executableDirectory.empty()
-        ? std::filesystem::path{}
-        : executableDirectory / L"CodexTex.settings.json";
-    std::string settingsError;
-    if (settingsPath_.empty() ||
-        !LoadCodexRequestSettings(settingsPath_, codexSettings_,
-                                  settingsLoadedFromDisk_, settingsError)) {
-        settingsMessage_ = settingsError.empty()
-            ? "Could not locate the executable directory for Codex settings."
-            : settingsError;
-    }
     imageGenLogPath_ = executableDirectory.empty()
         ? std::filesystem::path{}
         : executableDirectory / L"CodexTex-ImageGen.log";
@@ -232,8 +276,8 @@ bool Application::Initialize(HINSTANCE instance, const int showCommand, std::str
     NormalizeCodexSettings();
     if (!diagnosticLogReady) {
         SetStatus("Could not create CodexTex-ImageGen.log beside the executable.", true);
-    } else if (!koreanFontLoaded) {
-        SetStatus("A Windows Korean font could not be loaded; Korean text may not render.", true);
+    } else if (!uiFontLoaded) {
+        SetStatus("A Windows UI font could not be loaded; localized text may not render.", true);
     }
 
     ShowWindow(window_, showCommand);
@@ -251,6 +295,7 @@ int Application::Run() {
         if (message.message == WM_QUIT) break;
 
         HandleCodexEvents();
+        if (uiFontReloadPending_) ReloadUiFont();
         ImGui_ImplDX11_NewFrame();
         ImGui_ImplWin32_NewFrame();
         ImGui::NewFrame();
@@ -289,7 +334,8 @@ void Application::Shutdown() {
 
 bool Application::CanClose() {
     if (!dirty_) return true;
-    const int choice = MessageBoxW(window_, L"Save the modified PNG texture before closing?",
+    const std::wstring prompt = Wide(Tr("Save the modified PNG texture before closing?"));
+    const int choice = MessageBoxW(window_, prompt.c_str(),
                                    L"CodexTex", MB_ICONQUESTION | MB_YESNOCANCEL);
     if (choice == IDCANCEL) return false;
     if (choice == IDYES) return SaveTexture(false);
@@ -344,13 +390,71 @@ void Application::ApplyDpiScale(const float scale) {
     ImGui_ImplDX11_InvalidateDeviceObjects();
     ImGuiIO& io = ImGui::GetIO();
     io.Fonts->Clear();
-    if (!LoadUiFont(io, dpiScale_)) {
-        SetStatus("A Windows Korean font could not be loaded; Korean text may not render.", true);
+    if (!LoadUiFont(io, dpiScale_, uiLanguage_)) {
+        SetStatus("A Windows UI font could not be loaded; localized text may not render.", true);
     }
     ImGui::StyleColorsDark();
     ImGui::GetStyle().WindowRounding = 4.0f;
     ImGui::GetStyle().ScaleAllSizes(dpiScale_);
     ImGui_ImplDX11_CreateDeviceObjects();
+}
+
+void Application::ReloadUiFont() {
+    uiFontReloadPending_ = false;
+    if (!imguiBackendsInitialized_ || !ImGui::GetCurrentContext()) return;
+    ImGui_ImplDX11_InvalidateDeviceObjects();
+    ImGuiIO& io = ImGui::GetIO();
+    io.Fonts->Clear();
+    if (!LoadUiFont(io, dpiScale_, uiLanguage_)) {
+        SetStatus("A Windows UI font could not be loaded; localized text may not render.", true);
+    }
+    ImGui_ImplDX11_CreateDeviceObjects();
+}
+
+const char* Application::Tr(const std::string_view english) const noexcept {
+    return Translate(uiLanguage_, english).data();
+}
+
+std::string Application::LocalizedMessage(const std::string_view message) const {
+    const std::string_view exact = Translate(uiLanguage_, message);
+    if (uiLanguage_ == UiLanguage::English || exact != message) return std::string(exact);
+
+    constexpr std::array prefixes{
+        std::string_view{"Codex ImageGen is ready via"},
+        std::string_view{"Codex App Server is unavailable:"},
+        std::string_view{"Codex CLI candidates were found, but none could start App Server"},
+    };
+    for (const std::string_view prefix : prefixes) {
+        if (!message.starts_with(prefix)) continue;
+        return std::string(Translate(uiLanguage_, prefix)) +
+            std::string(message.substr(prefix.size()));
+    }
+    return std::string(message);
+}
+
+std::string Application::WindowLabel(const std::string_view english,
+                                     const std::string_view stableId) const {
+    return std::string(Translate(uiLanguage_, english)) + "###" + std::string(stableId);
+}
+
+bool Application::SelectUiLanguage(const UiLanguage language) {
+    CodexRequestSettings settingsToSave = persistedSettings_;
+    settingsToSave.language = std::string(UiLanguageCode(language));
+    std::string error;
+    if (!SaveCodexRequestSettings(settingsPath_, settingsToSave, error)) {
+        settingsMessage_ = error;
+        SetStatus(error, true);
+        return false;
+    }
+    persistedSettings_ = std::move(settingsToSave);
+    codexSettings_.language = persistedSettings_.language;
+    settingsLoadedFromDisk_ = true;
+    settingsMessage_.clear();
+    if (uiLanguage_ != language) {
+        uiLanguage_ = language;
+        uiFontReloadPending_ = true;
+    }
+    return true;
 }
 
 void Application::DrawUi() {
@@ -367,10 +471,10 @@ void Application::DrawUi() {
         ImGui::DockBuilderSplitNode(center, ImGuiDir_Right, 0.28f, &right, &center);
         ImGuiID bottom = 0;
         ImGui::DockBuilderSplitNode(center, ImGuiDir_Down, 0.30f, &bottom, &center);
-        ImGui::DockBuilderDockWindow("3D Viewport", center);
-        ImGui::DockBuilderDockWindow("Projection Tools", right);
-        ImGui::DockBuilderDockWindow("Texture Preview", bottom);
-        ImGui::DockBuilderDockWindow("Session Temp", bottom);
+        ImGui::DockBuilderDockWindow(WindowLabel("3D Viewport", "3DViewportWindow").c_str(), center);
+        ImGui::DockBuilderDockWindow(WindowLabel("Projection Tools", "ProjectionToolsWindow").c_str(), right);
+        ImGui::DockBuilderDockWindow(WindowLabel("Texture Preview", "TexturePreviewWindow").c_str(), bottom);
+        ImGui::DockBuilderDockWindow(WindowLabel("Session Temp", "SessionTempWindow").c_str(), bottom);
         ImGui::DockBuilderFinish(dockspace);
     }
     DrawViewport();
@@ -381,29 +485,44 @@ void Application::DrawUi() {
 
 void Application::DrawMenuBar() {
     if (!ImGui::BeginMainMenuBar()) return;
-    if (ImGui::BeginMenu("File")) {
+    if (ImGui::BeginMenu(Tr("File"))) {
         const bool primaryAssetLoadingEnabled = !activeProjectionId_.has_value();
-        if (ImGui::MenuItem("Open OBJ...", "Ctrl+O", false, primaryAssetLoadingEnabled)) OpenObj();
-        if (ImGui::MenuItem("Open Texture PNG...", "Ctrl+T", false,
+        if (ImGui::MenuItem(Tr("Open OBJ..."), "Ctrl+O", false, primaryAssetLoadingEnabled)) OpenObj();
+        if (ImGui::MenuItem(Tr("Open Texture PNG..."), "Ctrl+T", false,
                             primaryAssetLoadingEnabled)) OpenTexture();
-        if (ImGui::MenuItem("Add Reference OBJ + PNG...")) AddReferenceAsset();
+        if (ImGui::MenuItem(Tr("Add Reference OBJ + PNG..."))) AddReferenceAsset();
         ImGui::Separator();
-        if (ImGui::MenuItem("Save Texture", "Ctrl+S", false, textureLoaded_)) SaveTexture(false);
-        if (ImGui::MenuItem("Save Texture As...", nullptr, false, textureLoaded_)) SaveTexture(true);
+        if (ImGui::MenuItem(Tr("Save Texture"), "Ctrl+S", false, textureLoaded_)) SaveTexture(false);
+        if (ImGui::MenuItem(Tr("Save Texture As..."), nullptr, false, textureLoaded_)) SaveTexture(true);
         ImGui::Separator();
-        if (ImGui::MenuItem("Exit")) PostMessageW(window_, WM_CLOSE, 0, 0);
+        if (ImGui::MenuItem(Tr("Exit"))) PostMessageW(window_, WM_CLOSE, 0, 0);
         ImGui::EndMenu();
     }
-    if (ImGui::BeginMenu("Edit")) {
-        if (ImGui::MenuItem("Undo Texture", "Ctrl+Z", false, !undoTextures_.empty())) UndoTexture();
-        if (ImGui::MenuItem("Redo Texture", "Ctrl+Y", false, !redoTextures_.empty())) RedoTexture();
+    if (ImGui::BeginMenu(Tr("Edit"))) {
+        if (ImGui::MenuItem(Tr("Undo Texture"), "Ctrl+Z", false, !undoTextures_.empty())) UndoTexture();
+        if (ImGui::MenuItem(Tr("Redo Texture"), "Ctrl+Y", false, !redoTextures_.empty())) RedoTexture();
+        ImGui::EndMenu();
+    }
+    if (ImGui::BeginMenu(Tr("Settings"))) {
+        if (ImGui::BeginMenu(Tr("Language"))) {
+            constexpr std::array languages{UiLanguage::English, UiLanguage::Japanese,
+                                           UiLanguage::Korean};
+            for (const UiLanguage language : languages) {
+                if (ImGui::MenuItem(NativeLanguageName(language).data(), nullptr,
+                                    uiLanguage_ == language)) {
+                    SelectUiLanguage(language);
+                }
+            }
+            ImGui::EndMenu();
+        }
         ImGui::EndMenu();
     }
     ImGui::EndMainMenuBar();
 }
 
 void Application::DrawViewport() {
-    ImGui::Begin("3D Viewport");
+    const std::string windowLabel = WindowLabel("3D Viewport", "3DViewportWindow");
+    ImGui::Begin(windowLabel.c_str());
     const auto drawLasso = [this](const ImVec2 topLeft) {
         if (!lassoActive_ || lassoPoints_.size() < 2) return;
         ImDrawList* draw = ImGui::GetWindowDrawList();
@@ -417,7 +536,8 @@ void Application::DrawViewport() {
     };
     std::optional<std::uint64_t> closeTab;
     if (ImGui::BeginTabBar("ViewportTabs", ImGuiTabBarFlags_Reorderable)) {
-        if (ImGui::BeginTabItem("Main Viewport")) {
+        const std::string mainTabLabel = WindowLabel("Main Viewport", "MainViewportTab");
+        if (ImGui::BeginTabItem(mainTabLabel.c_str())) {
             ActivateMainViewport();
             Vec2 available{std::max(ImGui::GetContentRegionAvail().x, 1.0f),
                            std::max(ImGui::GetContentRegionAvail().y, 1.0f)};
@@ -437,11 +557,11 @@ void Application::DrawViewport() {
                 ImDrawList* draw = ImGui::GetWindowDrawList();
                 draw->AddRect(minimum, maximum, color, 0.0f, 0, 2.0f * dpiScale_);
                 draw->AddText(ImVec2(minimum.x + 6.0f * dpiScale_, minimum.y + 5.0f * dpiScale_),
-                              color, "ImageGen 1:1 crop");
+                              color, Tr("ImageGen 1:1 crop"));
             }
 
             const ImVec2 afterImage = ImGui::GetCursorScreenPos();
-            constexpr char originalLabel[] = "원본 텍스처 렌더링";
+            const char* originalLabel = Tr("Original texture");
             const ImGuiStyle& style = ImGui::GetStyle();
             const float padding = 9.0f * dpiScale_;
             const ImVec2 textSize = ImGui::CalcTextSize(originalLabel);
@@ -472,9 +592,10 @@ void Application::DrawViewport() {
         }
 
         for (auto& tab : projectionTabs_) {
-            std::string visible = "Projection " + std::to_string(tab.id);
+            std::string visible = std::string(Tr("Projection")) + " " + std::to_string(tab.id);
             if (tab.generationStartedAt && codex_.IsBusy(tab.id)) {
-                visible += " (" + ElapsedLabel(*tab.generationStartedAt).substr(11) + ")";
+                const std::string elapsed = ElapsedLabel(*tab.generationStartedAt, Tr("Generating"));
+                visible += " (" + elapsed.substr(elapsed.find_last_of(' ') + 1) + ")";
             }
             const std::string label = visible + "###ProjectionTab" + std::to_string(tab.id);
             bool open = true;
@@ -517,9 +638,9 @@ void Application::DrawViewport() {
                 bool viewportHovered = ImGui::IsItemHovered();
                 const ImVec2 afterImage = ImGui::GetCursorScreenPos();
 
-                constexpr char workingLabel[] = "작업";
-                constexpr char originalLabel[] = "원본";
-                constexpr char generatedLabel[] = "생성 전체";
+                const char* workingLabel = Tr("Working");
+                const char* originalLabel = Tr("Original");
+                const char* generatedLabel = Tr("Generated Image");
                 const ImGuiStyle& style = ImGui::GetStyle();
                 const float padding = 9.0f * dpiScale_;
                 const float radioSize = ImGui::GetFrameHeight();
@@ -576,7 +697,7 @@ void Application::DrawViewport() {
                 ImDrawList* draw = ImGui::GetWindowDrawList();
                 draw->AddRect(minimum, maximum, color, 0.0f, 0, 2.0f * dpiScale_);
                 draw->AddText(ImVec2(minimum.x + 6.0f * dpiScale_, minimum.y + 5.0f * dpiScale_),
-                              color, "Locked projection crop");
+                              color, Tr("Locked projection crop"));
                 const Vec2 localMouse{mouse.x - topLeft.x, mouse.y - topLeft.y};
                 const bool brushAvailable = tab.projectionLoaded && !tab.applied &&
                     !codex_.IsBusy(tab.id) && !useLasso_ &&
@@ -697,69 +818,70 @@ void Application::HandleViewportInput(const Vec2& topLeft, const Vec2& size, Pro
 }
 
 void Application::DrawTools() {
-    ImGui::Begin("Projection Tools");
+    const std::string windowLabel = WindowLabel("Projection Tools", "ProjectionToolsWindow");
+    ImGui::Begin(windowLabel.c_str());
     ProjectionTab* tab = ActiveProjectionTab();
     if (tab == nullptr) {
-        if (ImGui::Button("Open OBJ")) OpenObj();
+        if (ImGui::Button(Tr("Open OBJ"))) OpenObj();
         ImGui::SameLine();
-        if (ImGui::Button("Open Texture PNG")) OpenTexture();
+        if (ImGui::Button(Tr("Open Texture PNG"))) OpenTexture();
         if (meshLoaded_) {
             ImGui::Text("OBJ: %s", Narrow(mesh_.SourcePath().filename()).c_str());
-            ImGui::Text("Triangles: %zu", mesh_.TriangleCount());
+            ImGui::Text(Tr("Triangles: %zu"), mesh_.TriangleCount());
         }
         if (textureLoaded_) {
-            ImGui::Text("Texture: %s (%ux%u)", Narrow(texturePath_.filename()).c_str(),
+            ImGui::Text(Tr("Texture: %s (%ux%u)"), Narrow(texturePath_.filename()).c_str(),
                         sourceTexture_.Width(), sourceTexture_.Height());
         }
     } else {
-        ImGui::SeparatorText("Locked projection source");
+        ImGui::SeparatorText(Tr("Locked projection source"));
         ImGui::BeginChild("LockedSourceInfo", ImVec2(0, 164.0f * dpiScale_), true);
         ImGui::TextColored(ImVec4(0.45f, 0.85f, 1, 1),
-                           "Read-only snapshot for Projection %llu",
+                           Tr("Read-only snapshot for Projection %llu"),
                            static_cast<unsigned long long>(tab->id));
         ImGui::Text("OBJ: %s", Narrow(mesh_.SourcePath().filename()).c_str());
-        ImGui::Text("Triangles: %zu", mesh_.TriangleCount());
-        ImGui::Text("Texture: %s (%ux%u)", Narrow(texturePath_.filename()).c_str(),
+        ImGui::Text(Tr("Triangles: %zu"), mesh_.TriangleCount());
+        ImGui::Text(Tr("Texture: %s (%ux%u)"), Narrow(texturePath_.filename()).c_str(),
                     sourceTexture_.Width(), sourceTexture_.Height());
-        ImGui::Text("Captured viewport: %u x %u; ImageGen crop: %u x %u",
+        ImGui::Text(Tr("Captured viewport: %u x %u; ImageGen crop: %u x %u"),
                     tab->frame.width, tab->frame.height,
                     tab->frame.cropSize, tab->frame.cropSize);
         ImGui::Text("Codex: %s / %s", tab->model.c_str(), tab->reasoningEffort.c_str());
         const auto hiddenCount = std::count(tab->hiddenFaces.begin(), tab->hiddenFaces.end(),
                                             std::uint8_t{1});
-        ImGui::Text("Frozen hidden faces: %zu", hiddenCount);
-        ImGui::TextDisabled("OBJ and Base Color loading is available only in Main Viewport.");
+        ImGui::Text(Tr("Frozen hidden faces: %zu"), hiddenCount);
+        ImGui::TextDisabled(Tr("OBJ and Base Color loading is available only in Main Viewport."));
         ImGui::EndChild();
     }
     if (meshLoaded_ && mesh_.UvOverlapCount() > 0) {
-        ImGui::TextColored(ImVec4(1, 0.65f, 0.2f, 1), "Warning: %zu overlapping UV pair(s)",
+        ImGui::TextColored(ImVec4(1, 0.65f, 0.2f, 1), Tr("Warning: %zu overlapping UV pair(s)"),
                            mesh_.UvOverlapCount());
-        ImGui::TextWrapped("Shared or mirrored UVs may let the opposite local-X side overwrite the bake.");
+        ImGui::TextWrapped(Tr("Shared or mirrored UVs may let the opposite local-X side overwrite the bake."));
     }
 
-    ImGui::SeparatorText("ImageGen reference sets");
-    if (ImGui::Button("Add reference OBJ + PNG")) AddReferenceAsset();
+    ImGui::SeparatorText(Tr("ImageGen reference sets"));
+    if (ImGui::Button(Tr("Add reference OBJ + PNG"))) AddReferenceAsset();
     ImGui::SameLine();
     ImGui::BeginDisabled(referenceAssets_.empty());
     bool& showReferences = tab == nullptr ? referenceAssetsVisible_ : tab->referenceAssetsVisible;
-    if (ImGui::Checkbox(tab == nullptr ? "Show in viewport" : "Show in this projection tab",
+    if (ImGui::Checkbox(tab == nullptr ? Tr("Show in viewport") : Tr("Show in this projection tab"),
                         &showReferences)) {
         renderer_.SetReferenceAssetsVisible(showReferences);
     }
     ImGui::EndDisabled();
-    ImGui::TextWrapped("Reference sets are viewport/ImageGen context only. Toggle them off manually while projection painting if desired.");
+    ImGui::TextWrapped(Tr("Reference sets are viewport/ImageGen context only. Toggle them off manually while projection painting if desired."));
     std::optional<std::size_t> removeReference;
     for (std::size_t i = 0; i < referenceAssets_.size(); ++i) {
         ImGui::PushID(static_cast<int>(i));
         ImGui::Text("%s + %s", Narrow(referenceAssets_[i].objPath.filename()).c_str(),
                     Narrow(referenceAssets_[i].texturePath.filename()).c_str());
         ImGui::SameLine();
-        if (ImGui::SmallButton("Remove")) removeReference = i;
+        if (ImGui::SmallButton(Tr("Remove"))) removeReference = i;
         ImGui::PopID();
     }
     if (removeReference) RemoveReferenceAsset(*removeReference);
     if (!referenceAssets_.empty()) {
-        if (ImGui::Button("Clear all references")) {
+        if (ImGui::Button(Tr("Clear all references"))) {
             referenceAssets_.clear();
             renderer_.ClearReferenceAssets();
             SetStatus("All inference reference sets were removed.");
@@ -768,50 +890,50 @@ void Application::DrawTools() {
     renderer_.SetReferenceAssetsVisible(
         tab == nullptr ? referenceAssetsVisible_ : tab->referenceAssetsVisible);
 
-    ImGui::SeparatorText("Viewport display");
-    if (ImGui::Checkbox("Neutral shading", &shadingEnabled_)) {
+    ImGui::SeparatorText(Tr("Viewport display"));
+    if (ImGui::Checkbox(Tr("Neutral shading"), &shadingEnabled_)) {
         renderer_.SetShadingEnabled(shadingEnabled_);
     }
     ImGui::SameLine();
     ImGui::BeginDisabled(!meshLoaded_ || activeProjectionId_.has_value());
-    if (ImGui::Button("Fit primary view (F)")) FitCamera();
+    if (ImGui::Button(Tr("Fit primary view (F)"))) FitCamera();
     ImGui::EndDisabled();
-    if (ImGui::ColorEdit3("Background color", viewportBackgroundColor_.data(),
+    if (ImGui::ColorEdit3(Tr("Background color"), viewportBackgroundColor_.data(),
                           ImGuiColorEditFlags_NoAlpha | ImGuiColorEditFlags_DisplayRGB |
                               ImGuiColorEditFlags_PickerHueWheel)) {
         renderer_.SetViewportBackgroundColor(viewportBackgroundColor_);
     }
-    ImGui::TextDisabled("Shading is off by default; Base Color is shown unchanged.");
+    ImGui::TextDisabled(Tr("Shading is off by default; Base Color is shown unchanged."));
 
     if (tab == nullptr) {
-        ImGui::SeparatorText("Main viewport mode");
-        if (ImGui::RadioButton("Navigate", editMode_ == EditMode::Navigate)) editMode_ = EditMode::Navigate;
+        ImGui::SeparatorText(Tr("Main viewport mode"));
+        if (ImGui::RadioButton(Tr("Navigate"), editMode_ == EditMode::Navigate)) editMode_ = EditMode::Navigate;
         ImGui::SameLine();
-        if (ImGui::RadioButton("Faces", editMode_ == EditMode::Face)) editMode_ = EditMode::Face;
-        if (editMode_ == EditMode::Face) ImGui::Checkbox("Lasso", &useLasso_);
+        if (ImGui::RadioButton(Tr("Faces"), editMode_ == EditMode::Face)) editMode_ = EditMode::Face;
+        if (editMode_ == EditMode::Face) ImGui::Checkbox(Tr("Lasso"), &useLasso_);
     }
 
     if (tab == nullptr && editMode_ == EditMode::Face) {
         const auto selectedCount = std::count(selectedFaces_.begin(), selectedFaces_.end(), std::uint8_t{1});
-        ImGui::Text("Selected faces: %zu", selectedCount);
-        if (ImGui::Button("Hide selected") && selectedCount > 0) HideSelectedFaces();
+        ImGui::Text(Tr("Selected faces: %zu"), selectedCount);
+        if (ImGui::Button(Tr("Hide selected")) && selectedCount > 0) HideSelectedFaces();
         ImGui::SameLine();
-        if (ImGui::Button("Undo hide") && !hiddenHistory_.empty()) UndoHiddenFaces();
+        if (ImGui::Button(Tr("Undo hide")) && !hiddenHistory_.empty()) UndoHiddenFaces();
         ImGui::SameLine();
-        if (ImGui::Button("Show all")) ShowAllFaces();
+        if (ImGui::Button(Tr("Show all"))) ShowAllFaces();
     }
 
     if (tab == nullptr) {
-        ImGui::SeparatorText("Create projection tab");
-        ImGui::TextWrapped("Generate captures the cyan square immediately, then opens an independent locked painting tab. The main viewport remains usable.");
-        ImGui::InputTextMultiline("ImageGen prompt", generationPrompt_.data(), generationPrompt_.size(),
+        ImGui::SeparatorText(Tr("Create projection tab"));
+        ImGui::TextWrapped(Tr("Generate captures the cyan square immediately, then opens an independent locked painting tab. The main viewport remains usable."));
+        ImGui::InputTextMultiline(Tr("ImageGen prompt"), generationPrompt_.data(), generationPrompt_.size(),
                                   ImVec2(-1, 90.0f * dpiScale_));
         const auto& models = codex_.Models();
         const CodexModelInfo* selectedModel = FindModel(models, codexSettings_.model);
         const std::string modelPreview = selectedModel
             ? selectedModel->displayName + " (" + selectedModel->id + ")"
             : codexSettings_.model;
-        if (ImGui::BeginCombo("Codex model", modelPreview.c_str())) {
+        if (ImGui::BeginCombo(Tr("Codex model"), modelPreview.c_str())) {
             for (const auto& model : models) {
                 const bool selected = model.id == codexSettings_.model;
                 const std::string label = model.displayName + " (" + model.id + ")";
@@ -829,7 +951,7 @@ void Application::DrawTools() {
             ImGui::EndCombo();
         }
         selectedModel = FindModel(models, codexSettings_.model);
-        if (selectedModel && ImGui::BeginCombo("Reasoning effort",
+        if (selectedModel && ImGui::BeginCombo(Tr("Reasoning effort"),
                                                codexSettings_.reasoningEffort.c_str())) {
             for (const auto& option : selectedModel->supportedReasoningEfforts) {
                 const bool selected = option.value == codexSettings_.reasoningEffort;
@@ -846,9 +968,9 @@ void Application::DrawTools() {
             ImGui::EndCombo();
         }
         if (settingsChanged_ || !settingsLoadedFromDisk_) {
-            ImGui::TextDisabled("Pending: saved beside the executable immediately before generation.");
+            ImGui::TextDisabled(Tr("Pending: saved beside the executable immediately before generation."));
         } else {
-            ImGui::TextDisabled("Loaded from CodexTex.settings.json.");
+            ImGui::TextDisabled(Tr("Loaded from CodexTex.settings.json."));
         }
         if (!settingsMessage_.empty()) {
             ImGui::TextColored(ImVec4(1, 0.35f, 0.3f, 1), "%s", settingsMessage_.c_str());
@@ -856,61 +978,61 @@ void Application::DrawTools() {
         const bool canGenerate = meshLoaded_ && textureLoaded_ && codex_.IsAvailable() &&
                                  generationPrompt_[0] != '\0';
         ImGui::BeginDisabled(!canGenerate);
-        if (ImGui::Button("Generate from current view")) CreateProjectionTab(true);
+        if (ImGui::Button(Tr("Generate from current view"))) CreateProjectionTab(true);
         ImGui::EndDisabled();
         ImGui::SameLine();
         ImGui::BeginDisabled(!meshLoaded_ || !textureLoaded_);
-        if (ImGui::Button("External PNG from current view")) CreateProjectionTab(false);
+        if (ImGui::Button(Tr("External PNG from current view"))) CreateProjectionTab(false);
         ImGui::EndDisabled();
     } else {
-        ImGui::SeparatorText("Projection workspace");
+        ImGui::SeparatorText(Tr("Projection workspace"));
         ImGui::TextColored(ImVec4(0.45f, 0.85f, 1, 1),
-                           "Camera and visibility are locked for this tab");
+                           Tr("Camera and visibility are locked for this tab"));
         if (codex_.IsBusy(tab->id)) {
             const std::string elapsed = tab->generationStartedAt
-                ? ElapsedLabel(*tab->generationStartedAt) : "AI working";
+                ? ElapsedLabel(*tab->generationStartedAt, Tr("Generating")) : Tr("AI working");
             ImGui::BeginDisabled();
             ImGui::Button(elapsed.c_str());
             ImGui::EndDisabled();
             ImGui::SameLine();
-            if (ImGui::Button("Cancel AI")) codex_.Cancel(tab->id);
+            if (ImGui::Button(Tr("Cancel AI"))) codex_.Cancel(tab->id);
         } else {
             ImGui::BeginDisabled(tab->applied);
-            if (ImGui::Button("Open/replace external PNG")) OpenProjection(*tab);
+            if (ImGui::Button(Tr("Open/replace external PNG"))) OpenProjection(*tab);
             ImGui::EndDisabled();
         }
         if (tab->projectionLoaded) {
-            ImGui::Text("Projection: %s", Narrow(tab->projectionPath.filename()).c_str());
+            ImGui::Text(Tr("Projection: %s"), Narrow(tab->projectionPath.filename()).c_str());
             ImGui::BeginDisabled(!codex_.IsAvailable() || codex_.IsBusy(tab->id) || tab->applied);
-            if (ImGui::Button("Suggest mask with Codex")) {
+            if (ImGui::Button(Tr("Suggest mask with Codex"))) {
                 codex_.BeginMaskProposal(tab->id, tab->capturePath, tab->projectionPath,
                                          tab->model, tab->reasoningEffort);
             }
             ImGui::EndDisabled();
         }
 
-        ImGui::SeparatorText("Mask and bake");
+        ImGui::SeparatorText(Tr("Mask and bake"));
         ImGui::BeginDisabled(!tab->projectionLoaded || codex_.IsBusy(tab->id) || tab->applied);
-        ImGui::Checkbox("Lasso", &useLasso_);
-        if (!useLasso_) ImGui::SliderFloat("Brush radius", &tab->brushRadius, 2.0f, 160.0f, "%.0f px");
-        if (useLasso_) ImGui::Checkbox("Lasso includes area", &maskInclude_);
-        if (ImGui::SliderInt("Inward feather", &tab->featherRadius, 0, 128, "%d px")) {
+        ImGui::Checkbox(Tr("Lasso"), &useLasso_);
+        if (!useLasso_) ImGui::SliderFloat(Tr("Brush radius"), &tab->brushRadius, 2.0f, 160.0f, "%.0f px");
+        if (useLasso_) ImGui::Checkbox(Tr("Lasso includes area"), &maskInclude_);
+        if (ImGui::SliderInt(Tr("Inward feather"), &tab->featherRadius, 0, 128, "%d px")) {
             ApplyMaskChange(*tab);
         }
-        if (ImGui::Button("Clear mask")) {
+        if (ImGui::Button(Tr("Clear mask"))) {
             tab->mask.Clear(false);
             ApplyMaskChange(*tab);
         }
         ImGui::SameLine();
-        if (ImGui::Button("Select all visible")) {
+        if (ImGui::Button(Tr("Select all visible"))) {
             tab->mask.Clear(true);
             ApplyMaskChange(*tab);
         }
-        ImGui::SliderFloat("Max surface angle", &tab->maxAngleDegrees, 0.0f, 89.0f, "%.0f deg");
-        constexpr const char* sideFilterLabels[]{
-            "Paint both local-X sides", "Ignore local -X side", "Ignore local +X side"};
+        ImGui::SliderFloat(Tr("Max surface angle"), &tab->maxAngleDegrees, 0.0f, 89.0f, "%.0f deg");
+        const char* sideFilterLabels[]{Tr("Paint both local-X sides"), Tr("Ignore local -X side"),
+                                       Tr("Ignore local +X side")};
         int sideFilter = static_cast<int>(tab->localSideFilter);
-        if (ImGui::Combo("Mirrored UV side", &sideFilter, sideFilterLabels,
+        if (ImGui::Combo(Tr("Mirrored UV side"), &sideFilter, sideFilterLabels,
                          static_cast<int>(std::size(sideFilterLabels)))) {
             tab->localSideFilter = static_cast<LocalSideFilter>(sideFilter);
             renderer_.SetLocalSideFilter(tab->localSideFilter);
@@ -918,25 +1040,27 @@ void Application::DrawTools() {
         ImGui::EndDisabled();
         if (tab->baseTextureRevision != textureRevision_) {
             ImGui::TextColored(ImVec4(1, 0.75f, 0.25f, 1),
-                               "Shared texture changed since this tab was created; bake uses the latest texture.");
+                               Tr("Shared texture changed since this tab was created; bake uses the latest texture."));
         }
         ImGui::BeginDisabled(!tab->projectionLoaded || codex_.IsBusy(tab->id) || tab->applied);
-        if (ImGui::Button(tab->applied ? "Already baked" : "Bake into shared texture")) Bake(*tab);
+        if (ImGui::Button(tab->applied ? Tr("Already baked") : Tr("Bake into shared texture"))) Bake(*tab);
         ImGui::EndDisabled();
         ImGui::SameLine();
-        const bool closeRequested = ImGui::Button("Close tab");
+        const bool closeRequested = ImGui::Button(Tr("Close tab"));
         const ImVec4 tabStatusColor = tab->statusIsError
             ? ImVec4(1, 0.35f, 0.3f, 1) : ImVec4(0.7f, 0.85f, 0.75f, 1);
-        ImGui::TextColored(tabStatusColor, "%s", tab->status.c_str());
+        const std::string localizedStatus = LocalizedMessage(tab->status);
+        ImGui::TextColored(tabStatusColor, "%s", localizedStatus.c_str());
         if (closeRequested) CloseProjectionTab(tab->id);
     }
 
-    ImGui::TextWrapped("%s", codex_.AvailabilityMessage().c_str());
+    const std::string localizedAvailability = LocalizedMessage(codex_.AvailabilityMessage());
+    ImGui::TextWrapped("%s", localizedAvailability.c_str());
     if (!imageGenLogPath_.empty()) {
-        ImGui::TextWrapped("ImageGen log: %s", Narrow(imageGenLogPath_).c_str());
+        ImGui::TextWrapped(Tr("ImageGen log: %s"), Narrow(imageGenLogPath_).c_str());
     }
     if (!codex_.IsAvailable() && !codex_.IsBusy()) {
-        if (ImGui::Button("Retry Codex detection")) {
+        if (ImGui::Button(Tr("Retry Codex detection"))) {
             const bool started = codex_.Start(sessionDirectory_);
             NormalizeCodexSettings();
             SetStatus(codex_.AvailabilityMessage(), !started || !codex_.IsAvailable());
@@ -944,17 +1068,19 @@ void Application::DrawTools() {
     }
 
     ImGui::BeginDisabled(undoTextures_.empty());
-    if (ImGui::Button("Undo")) UndoTexture();
+    if (ImGui::Button(Tr("Undo"))) UndoTexture();
     ImGui::EndDisabled();
 
     ImGui::Separator();
     const ImVec4 statusColor = statusIsError_ ? ImVec4(1, 0.35f, 0.3f, 1) : ImVec4(0.7f, 0.85f, 0.75f, 1);
-    ImGui::TextColored(statusColor, "%s", status_.c_str());
+    const std::string localizedStatus = LocalizedMessage(status_);
+    ImGui::TextColored(statusColor, "%s", localizedStatus.c_str());
     ImGui::End();
 }
 
 void Application::DrawTexturePreview() {
-    ImGui::Begin("Texture Preview");
+    const std::string windowLabel = WindowLabel("Texture Preview", "TexturePreviewWindow");
+    ImGui::Begin(windowLabel.c_str());
     if (textureLoaded_ && renderer_.WorkingTexture()) {
         const ImVec2 available = ImGui::GetContentRegionAvail();
         const float aspect = static_cast<float>(sourceTexture_.Width()) / sourceTexture_.Height();
@@ -962,29 +1088,30 @@ void Application::DrawTexturePreview() {
         if (size.y > available.y) size = {available.y * aspect, available.y};
         ImGui::Image(reinterpret_cast<ImTextureID>(renderer_.WorkingTexture()), size);
     } else {
-        ImGui::TextUnformatted("No PNG texture loaded.");
+        ImGui::TextUnformatted(Tr("No PNG texture loaded."));
     }
     ImGui::End();
 }
 
 void Application::DrawSessionTemp() {
-    ImGui::Begin("Session Temp");
+    const std::string windowLabel = WindowLabel("Session Temp", "SessionTempWindow");
+    ImGui::Begin(windowLabel.c_str());
     if (tempFilesDirty_) RefreshTempFiles();
-    ImGui::TextWrapped("Session folder: %s", Narrow(sessionDirectory_).c_str());
-    if (ImGui::Button("Refresh")) RefreshTempFiles();
+    ImGui::TextWrapped(Tr("Session folder: %s"), Narrow(sessionDirectory_).c_str());
+    if (ImGui::Button(Tr("Refresh"))) RefreshTempFiles();
     ImGui::SameLine();
     ImGui::BeginDisabled(selectedTempFile_.empty());
-    if (ImGui::Button("Delete selected")) DeleteTempFile(selectedTempFile_);
+    if (ImGui::Button(Tr("Delete selected"))) DeleteTempFile(selectedTempFile_);
     ImGui::EndDisabled();
     ImGui::SameLine();
     ImGui::BeginDisabled(tempFiles_.empty());
-    if (ImGui::Button("Delete all temp files")) DeleteAllTempFiles();
+    if (ImGui::Button(Tr("Delete all temp files"))) DeleteAllTempFiles();
     ImGui::EndDisabled();
 
     const float listWidth = std::max(ImGui::GetContentRegionAvail().x * 0.42f,
                                      220.0f * dpiScale_);
     ImGui::BeginChild("TempFileList", ImVec2(listWidth, 0), true);
-    if (tempFiles_.empty()) ImGui::TextDisabled("No session temporary files.");
+    if (tempFiles_.empty()) ImGui::TextDisabled(Tr("No session temporary files."));
     for (const auto& file : tempFiles_) {
         const auto relative = file.path.lexically_relative(sessionDirectory_);
         const std::string label = Narrow(relative) + "  (" + FileSizeLabel(file.size) + ")";
@@ -996,11 +1123,11 @@ void Application::DrawSessionTemp() {
     ImGui::SameLine();
     ImGui::BeginGroup();
     if (selectedTempFile_.empty()) {
-        ImGui::TextDisabled("Select a file to inspect its contents.");
+        ImGui::TextDisabled(Tr("Select a file to inspect its contents."));
     } else {
         ImGui::TextWrapped("%s", Narrow(selectedTempFile_.filename()).c_str());
         if (!tempPreviewMessage_.empty()) {
-            ImGui::TextWrapped("%s", tempPreviewMessage_.c_str());
+            ImGui::TextWrapped("%s", Tr(tempPreviewMessage_));
         }
         if (!tempPreviewImage_.Empty() && renderer_.SessionPreviewTexture()) {
             const ImVec2 available = ImGui::GetContentRegionAvail();
@@ -1111,11 +1238,13 @@ void Application::DeleteTempFile(const std::filesystem::path& path) {
     for (const auto& tab : projectionTabs_) {
         if (tab.capturePath == path || tab.projectionPath == path) affectedTabs.push_back(tab.id);
     }
-    std::wstring prompt = L"Delete this temporary file?\n\n" + path.filename().wstring();
+    std::wstring prompt = Wide(Tr("Delete this temporary file?")) + L"\n\n" +
+        path.filename().wstring();
     if (!affectedTabs.empty()) {
-        prompt += L"\n\nIt is used by a projection workspace. That tab will be closed and its AI task cancelled.";
+        prompt += L"\n\n" + Wide(Tr("It is used by a projection workspace. That tab will be closed and its AI task cancelled."));
     }
-    if (MessageBoxW(window_, prompt.c_str(), L"Delete temporary file",
+    const std::wstring title = Wide(Tr("Delete temporary file"));
+    if (MessageBoxW(window_, prompt.c_str(), title.c_str(),
                     MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2) != IDYES) return;
     for (const auto id : affectedTabs) CloseProjectionTab(id);
     std::error_code error;
@@ -1141,11 +1270,12 @@ void Application::DeleteAllTempFiles() {
         SetStatus("The managed session folder failed its safety check.", true);
         return;
     }
-    std::wstring prompt = L"Delete every file in this session temp folder?";
+    std::wstring prompt = Wide(Tr("Delete every file in this session temp folder?"));
     if (!projectionTabs_.empty()) {
-        prompt += L"\n\nAll projection workspace tabs will be closed and active AI tasks cancelled.";
+        prompt += L"\n\n" + Wide(Tr("All projection workspace tabs will be closed and active AI tasks cancelled."));
     }
-    if (MessageBoxW(window_, prompt.c_str(), L"Delete all session temporary files",
+    const std::wstring title = Wide(Tr("Delete all session temporary files"));
+    if (MessageBoxW(window_, prompt.c_str(), title.c_str(),
                     MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2) != IDYES) return;
     ClearProjectionTabs();
     selectedTempFile_.clear();
@@ -1173,7 +1303,7 @@ void Application::DeleteAllTempFiles() {
 }
 
 bool Application::OpenObj() {
-    const auto path = OpenFileDialog(L"Open UV-mapped OBJ", L"Wavefront OBJ (*.obj)\0*.obj\0\0");
+    const auto path = OpenFileDialog("Open UV-mapped OBJ", L"Wavefront OBJ (*.obj)\0*.obj\0\0");
     if (path.empty()) return false;
     Mesh mesh;
     std::string error;
@@ -1203,7 +1333,7 @@ bool Application::OpenObj() {
 
 bool Application::OpenTexture() {
     if (dirty_ && !CanClose()) return false;
-    const auto path = OpenFileDialog(L"Open Base Color PNG", L"PNG image (*.png)\0*.png\0\0");
+    const auto path = OpenFileDialog("Open Base Color PNG", L"PNG image (*.png)\0*.png\0\0");
     if (path.empty()) return false;
     TextureImage image;
     std::string error;
@@ -1226,7 +1356,7 @@ bool Application::OpenTexture() {
 }
 
 bool Application::OpenProjection(ProjectionTab& tab) {
-    const auto path = OpenFileDialog(L"Open projection PNG", L"PNG image (*.png)\0*.png\0\0");
+    const auto path = OpenFileDialog("Open projection PNG", L"PNG image (*.png)\0*.png\0\0");
     if (path.empty()) return false;
     TextureImage image;
     std::string error;
@@ -1257,10 +1387,10 @@ bool Application::OpenProjection(ProjectionTab& tab) {
 }
 
 bool Application::AddReferenceAsset() {
-    const auto objPath = OpenFileDialog(L"Open inference reference OBJ",
+    const auto objPath = OpenFileDialog("Open inference reference OBJ",
                                         L"Wavefront OBJ (*.obj)\0*.obj\0\0");
     if (objPath.empty()) return false;
-    const auto texturePath = OpenFileDialog(L"Open texture for the reference OBJ",
+    const auto texturePath = OpenFileDialog("Open texture for the reference OBJ",
                                             L"PNG image (*.png)\0*.png\0\0");
     if (texturePath.empty()) return false;
 
@@ -1308,7 +1438,7 @@ bool Application::SaveTexture(const bool choosePath) {
     if (!textureLoaded_) return false;
     std::filesystem::path path = texturePath_;
     if (choosePath || path.empty()) {
-        path = SaveFileDialog(L"Save Base Color PNG", L"PNG image (*.png)\0*.png\0\0", path);
+        path = SaveFileDialog("Save Base Color PNG", L"PNG image (*.png)\0*.png\0\0", path);
         if (path.empty()) return false;
     }
     TextureImage current;
@@ -1381,6 +1511,7 @@ bool Application::SaveCodexSettingsForRequest() {
         SetStatus(error, true);
         return false;
     }
+    persistedSettings_ = codexSettings_;
     settingsLoadedFromDisk_ = true;
     settingsChanged_ = false;
     settingsMessage_.clear();
@@ -1656,11 +1787,13 @@ void Application::SetStatus(std::string status, const bool error) {
     statusIsError_ = error;
 }
 
-std::filesystem::path Application::OpenFileDialog(const wchar_t* title, const wchar_t* filter) {
+std::filesystem::path Application::OpenFileDialog(const std::string_view title,
+                                                  const wchar_t* filter) {
     std::array<wchar_t, 32768> path{};
+    const std::wstring localizedTitle = Wide(Translate(uiLanguage_, title));
     OPENFILENAMEW dialog{sizeof(OPENFILENAMEW)};
     dialog.hwndOwner = window_;
-    dialog.lpstrTitle = title;
+    dialog.lpstrTitle = localizedTitle.c_str();
     dialog.lpstrFilter = filter;
     dialog.lpstrFile = path.data();
     dialog.nMaxFile = static_cast<DWORD>(path.size());
@@ -1668,13 +1801,15 @@ std::filesystem::path Application::OpenFileDialog(const wchar_t* title, const wc
     return GetOpenFileNameW(&dialog) ? std::filesystem::path(path.data()) : std::filesystem::path{};
 }
 
-std::filesystem::path Application::SaveFileDialog(const wchar_t* title, const wchar_t* filter,
+std::filesystem::path Application::SaveFileDialog(const std::string_view title,
+                                                   const wchar_t* filter,
                                                    const std::filesystem::path& initial) {
     std::array<wchar_t, 32768> path{};
+    const std::wstring localizedTitle = Wide(Translate(uiLanguage_, title));
     if (!initial.empty()) wcsncpy_s(path.data(), path.size(), initial.c_str(), _TRUNCATE);
     OPENFILENAMEW dialog{sizeof(OPENFILENAMEW)};
     dialog.hwndOwner = window_;
-    dialog.lpstrTitle = title;
+    dialog.lpstrTitle = localizedTitle.c_str();
     dialog.lpstrFilter = filter;
     dialog.lpstrDefExt = L"png";
     dialog.lpstrFile = path.data();

@@ -2,6 +2,7 @@
 
 #include "codex/CodexBridge.hpp"
 #include "core/AppSettings.hpp"
+#include "core/Localization.hpp"
 #include "core/Mask.hpp"
 #include "core/Mesh.hpp"
 #include "core/TextureImage.hpp"
@@ -54,6 +55,8 @@ private:
     bool SaveTexture(bool choosePath);
     bool CreateProjectionTab(bool generate);
     bool SaveCodexSettingsForRequest();
+    bool SelectUiLanguage(UiLanguage language);
+    void ReloadUiFont();
     void NormalizeCodexSettings();
     void CloseProjectionTab(std::uint64_t id);
     void ClearProjectionTabs();
@@ -74,9 +77,13 @@ private:
     void DeleteTempFile(const std::filesystem::path& path);
     void DeleteAllTempFiles();
     void SetStatus(std::string status, bool error = false);
+    [[nodiscard]] const char* Tr(std::string_view english) const noexcept;
+    [[nodiscard]] std::string LocalizedMessage(std::string_view message) const;
+    [[nodiscard]] std::string WindowLabel(std::string_view english,
+                                          std::string_view stableId) const;
 
-    std::filesystem::path OpenFileDialog(const wchar_t* title, const wchar_t* filter);
-    std::filesystem::path SaveFileDialog(const wchar_t* title, const wchar_t* filter,
+    std::filesystem::path OpenFileDialog(std::string_view title, const wchar_t* filter);
+    std::filesystem::path SaveFileDialog(std::string_view title, const wchar_t* filter,
                                          const std::filesystem::path& initial);
     std::filesystem::path CreateSessionDirectory() const;
 
@@ -137,6 +144,8 @@ private:
     std::filesystem::path imageGenLogPath_;
     std::filesystem::path settingsPath_;
     CodexRequestSettings codexSettings_;
+    CodexRequestSettings persistedSettings_;
+    UiLanguage uiLanguage_{UiLanguage::English};
     bool settingsLoadedFromDisk_{};
     bool settingsChanged_{};
     std::string settingsMessage_;
@@ -149,6 +158,7 @@ private:
     std::array<float, 3> viewportBackgroundColor_{0.24f, 0.30f, 0.36f};
     bool dockLayoutInitialized_{};
     bool imguiBackendsInitialized_{};
+    bool uiFontReloadPending_{};
     float dpiScale_{1.0f};
 
     std::vector<std::uint8_t> hiddenFaces_;
