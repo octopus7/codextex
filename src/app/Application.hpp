@@ -48,6 +48,9 @@ private:
 
     bool OpenObj();
     bool OpenTexture();
+    bool OpenRecentPrimaryAssets();
+    void RememberRecentPrimaryAssets();
+    [[nodiscard]] bool RecentPrimaryAssetsAvailable() const;
     bool OpenProjection(ProjectionTab& tab);
     bool AddReferenceAsset();
     void RemoveReferenceAsset(std::size_t index);

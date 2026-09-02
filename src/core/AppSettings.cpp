@@ -7,6 +7,23 @@
 #include <system_error>
 
 namespace codextex {
+namespace {
+
+std::string PathToUtf8(const std::filesystem::path& path) {
+    const auto value = path.u8string();
+    return {reinterpret_cast<const char*>(value.data()), value.size()};
+}
+
+std::filesystem::path PathFromUtf8(const std::string& value) {
+    const std::u8string utf8(reinterpret_cast<const char8_t*>(value.data()), value.size());
+    return std::filesystem::path(utf8);
+}
+
+} // namespace
+
+bool HasRecentPrimaryAssetPair(const CodexRequestSettings& settings) noexcept {
+    return !settings.recentObjPath.empty() && !settings.recentTexturePath.empty();
+}
 
 bool LoadCodexRequestSettings(const std::filesystem::path& path,
                               CodexRequestSettings& settings,
@@ -44,6 +61,20 @@ bool LoadCodexRequestSettings(const std::filesystem::path& path,
                 settings.language = language->get<std::string>();
             }
         }
+        if (const auto recent = document.find("recentPrimaryAssets");
+            recent != document.end() && recent->is_object()) {
+            const auto obj = recent->find("obj");
+            const auto texture = recent->find("texture");
+            if (obj != recent->end() && obj->is_string() &&
+                texture != recent->end() && texture->is_string()) {
+                const std::string objPath = obj->get<std::string>();
+                const std::string texturePath = texture->get<std::string>();
+                if (!objPath.empty() && !texturePath.empty()) {
+                    settings.recentObjPath = PathFromUtf8(objPath);
+                    settings.recentTexturePath = PathFromUtf8(texturePath);
+                }
+            }
+        }
         loadedFromDisk = true;
         return true;
     } catch (const std::exception& exception) {
@@ -67,11 +98,17 @@ bool SaveCodexRequestSettings(const std::filesystem::path& path,
 
     const std::filesystem::path temporary = path.wstring() + L".tmp";
     try {
-        const nlohmann::json document = {
+        nlohmann::json document = {
             {"codex", {{"model", settings.model},
                        {"reasoningEffort", settings.reasoningEffort}}},
             {"ui", {{"language", settings.language}}},
         };
+        if (HasRecentPrimaryAssetPair(settings)) {
+            document["recentPrimaryAssets"] = {
+                {"obj", PathToUtf8(settings.recentObjPath)},
+                {"texture", PathToUtf8(settings.recentTexturePath)},
+            };
+        }
         std::ofstream stream(temporary, std::ios::binary | std::ios::trunc);
         if (!stream) {
             error = "Could not create CodexTex.settings.json beside the executable.";

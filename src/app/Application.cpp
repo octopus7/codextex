@@ -852,6 +852,10 @@ void Application::DrawTools() {
         if (ImGui::Button(Tr("Open OBJ"))) OpenObj();
         ImGui::SameLine();
         if (ImGui::Button(Tr("Open Texture PNG"))) OpenTexture();
+        if (RecentPrimaryAssetsAvailable()) {
+            ImGui::SameLine();
+            if (ImGui::Button(Tr("Load last files"))) OpenRecentPrimaryAssets();
+        }
         if (meshLoaded_) {
             ImGui::Text("OBJ: %s", Narrow(mesh_.SourcePath().filename()).c_str());
             ImGui::Text(Tr("Triangles: %zu"), mesh_.TriangleCount());
@@ -1350,6 +1354,7 @@ bool Application::OpenObj() {
     camera_.fovDegrees = 45.0f;
     FitCamera();
     SetStatus(error.empty() ? "OBJ loaded." : error);
+    RememberRecentPrimaryAssets();
     return true;
 }
 
@@ -1374,6 +1379,88 @@ bool Application::OpenTexture() {
     redoTextures_.clear();
     ++textureRevision_;
     SetStatus("Texture PNG loaded.");
+    RememberRecentPrimaryAssets();
+    return true;
+}
+
+bool Application::RecentPrimaryAssetsAvailable() const {
+    if (!HasRecentPrimaryAssetPair(codexSettings_)) return false;
+    std::error_code objError;
+    std::error_code textureError;
+    return std::filesystem::is_regular_file(codexSettings_.recentObjPath, objError) &&
+           !objError &&
+           std::filesystem::is_regular_file(codexSettings_.recentTexturePath, textureError) &&
+           !textureError;
+}
+
+void Application::RememberRecentPrimaryAssets() {
+    if (!meshLoaded_ || !textureLoaded_) return;
+
+    CodexRequestSettings settingsToSave = persistedSettings_;
+    settingsToSave.language = codexSettings_.language;
+    settingsToSave.recentObjPath = mesh_.SourcePath();
+    settingsToSave.recentTexturePath = texturePath_;
+    std::string error;
+    if (!SaveCodexRequestSettings(settingsPath_, settingsToSave, error)) {
+        settingsMessage_ = error;
+        SetStatus("The assets loaded, but their paths could not be saved.", true);
+        return;
+    }
+
+    persistedSettings_ = settingsToSave;
+    codexSettings_.recentObjPath = settingsToSave.recentObjPath;
+    codexSettings_.recentTexturePath = settingsToSave.recentTexturePath;
+    settingsLoadedFromDisk_ = true;
+    settingsMessage_.clear();
+}
+
+bool Application::OpenRecentPrimaryAssets() {
+    if (!RecentPrimaryAssetsAvailable()) {
+        SetStatus("The last OBJ and texture files are no longer available.", true);
+        return false;
+    }
+    if (dirty_ && !CanClose()) return false;
+
+    const std::filesystem::path objPath = codexSettings_.recentObjPath;
+    const std::filesystem::path texturePath = codexSettings_.recentTexturePath;
+    Mesh mesh;
+    TextureImage texture;
+    std::string error;
+    if (!mesh.LoadObj(objPath, error)) {
+        SetStatus(error, true);
+        return false;
+    }
+    if (!texture.LoadPng(texturePath, error)) {
+        SetStatus(error, true);
+        return false;
+    }
+
+    ClearProjectionTabs();
+    if (!renderer_.SetMesh(mesh, error) ||
+        !renderer_.SetSourceAndWorkingTexture(texture, error)) {
+        SetStatus(error, true);
+        return false;
+    }
+
+    mesh_ = std::move(mesh);
+    sourceTexture_ = std::move(texture);
+    texturePath_ = texturePath;
+    meshLoaded_ = true;
+    textureLoaded_ = true;
+    dirty_ = false;
+    mainOriginalTexturePreview_ = false;
+    renderer_.SetLocalSideFilter(LocalSideFilter::Both);
+    hiddenFaces_.assign(mesh_.TriangleCount(), 0);
+    selectedFaces_.assign(mesh_.TriangleCount(), 0);
+    hiddenHistory_.clear();
+    undoTextures_.clear();
+    redoTextures_.clear();
+    camera_.yaw = 0.0f;
+    camera_.pitch = 0.15f;
+    camera_.fovDegrees = 45.0f;
+    ++textureRevision_;
+    FitCamera();
+    SetStatus("Last OBJ and texture loaded.");
     return true;
 }
 

@@ -33,7 +33,9 @@ TEST_CASE("Missing app settings use Sol medium without creating a file") {
 TEST_CASE("App settings persist beside the requested binary path") {
     const auto path = SettingsPath(L"settings-roundtrip");
     std::filesystem::create_directories(path.parent_path());
-    const codextex::CodexRequestSettings written{"gpt-5.6-luna", "low", "ja"};
+    codextex::CodexRequestSettings written{"gpt-5.6-luna", "low", "ja"};
+    written.recentObjPath = LR"(D:\素材\character.obj)";
+    written.recentTexturePath = LR"(D:\素材\character.png)";
     std::string error;
     REQUIRE(codextex::SaveCodexRequestSettings(path, written, error));
 
@@ -44,6 +46,24 @@ TEST_CASE("App settings persist beside the requested binary path") {
     CHECK(loadedSettings.model == "gpt-5.6-luna");
     CHECK(loadedSettings.reasoningEffort == "low");
     CHECK(loadedSettings.language == "ja");
+    CHECK(loadedSettings.recentObjPath == written.recentObjPath);
+    CHECK(loadedSettings.recentTexturePath == written.recentTexturePath);
+    CHECK(codextex::HasRecentPrimaryAssetPair(loadedSettings));
+}
+
+TEST_CASE("Incomplete recent primary assets are not persisted") {
+    const auto path = SettingsPath(L"settings-incomplete-recent");
+    std::filesystem::create_directories(path.parent_path());
+    codextex::CodexRequestSettings written;
+    written.recentObjPath = LR"(D:\assets\only.obj)";
+    std::string error;
+    REQUIRE(codextex::SaveCodexRequestSettings(path, written, error));
+
+    codextex::CodexRequestSettings loadedSettings;
+    bool loaded = false;
+    REQUIRE(codextex::LoadCodexRequestSettings(path, loadedSettings, loaded, error));
+    CHECK(loaded);
+    CHECK_FALSE(codextex::HasRecentPrimaryAssetPair(loadedSettings));
 }
 
 TEST_CASE("Legacy app settings without a UI language remain loadable") {
