@@ -8,6 +8,7 @@
 #include <d3d11.h>
 #include <wrl/client.h>
 
+#include <array>
 #include <cstdint>
 #include <filesystem>
 #include <span>
@@ -72,6 +73,7 @@ public:
     void SetReferenceAssetsVisible(bool visible) noexcept { referenceAssetsVisible_ = visible; }
     [[nodiscard]] bool ReferenceAssetsVisible() const noexcept { return referenceAssetsVisible_; }
     void SetShadingEnabled(bool enabled) noexcept { shadingEnabled_ = enabled; }
+    void SetViewportBackgroundColor(const std::array<float, 3>& color) noexcept;
     void SetOriginalTexturePreview(bool enabled) noexcept { originalTexturePreview_ = enabled; }
     void SetLocalSideFilter(LocalSideFilter filter) noexcept { localSideFilter_ = filter; }
     void SetMask(const MaskImage& mask, int featherRadius);
@@ -216,6 +218,7 @@ private:
     bool referenceAssetsVisible_{true};
     bool shadingEnabled_{};
     bool originalTexturePreview_{};
+    std::array<float, 4> viewportBackgroundColor_{0.0467f, 0.0732f, 0.1070f, 1.0f};
     LocalSideFilter localSideFilter_{LocalSideFilter::Both};
     float localCenterX_{};
 };

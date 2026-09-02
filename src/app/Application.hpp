@@ -146,6 +146,7 @@ private:
     bool referenceAssetsVisible_{true};
     bool shadingEnabled_{};
     bool mainOriginalTexturePreview_{};
+    std::array<float, 3> viewportBackgroundColor_{0.24f, 0.30f, 0.36f};
     bool dockLayoutInitialized_{};
     bool imguiBackendsInitialized_{};
     float dpiScale_{1.0f};

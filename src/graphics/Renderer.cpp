@@ -793,6 +793,19 @@ void Renderer::SetMask(const MaskImage& mask, const int featherRadius) {
     DispatchMaskFeather(mask, featherRadius);
 }
 
+void Renderer::SetViewportBackgroundColor(const std::array<float, 3>& color) noexcept {
+    const auto srgbToLinear = [](const float channel) {
+        const float value = std::clamp(channel, 0.0f, 1.0f);
+        return value <= 0.04045f
+            ? value / 12.92f
+            : std::pow((value + 0.055f) / 1.055f, 2.4f);
+    };
+    viewportBackgroundColor_[0] = srgbToLinear(color[0]);
+    viewportBackgroundColor_[1] = srgbToLinear(color[1]);
+    viewportBackgroundColor_[2] = srgbToLinear(color[2]);
+    viewportBackgroundColor_[3] = 1.0f;
+}
+
 bool Renderer::CreateViewportTargets(const std::uint32_t width, const std::uint32_t height,
                                      std::string& error) {
     colorTexture_.Reset(); colorRtv_.Reset(); colorSrv_.Reset();
@@ -878,11 +891,10 @@ void Renderer::RenderViewport(const std::uint32_t width, const std::uint32_t hei
         std::string ignored;
         if (!CreateViewportTargets(width, height, ignored)) return;
     }
-    const std::array<float, 4> clear{0.075f, 0.08f, 0.09f, 1.0f};
     const std::array<float, 4> zero{};
     ID3D11RenderTargetView* targets[]{colorRtv_.Get(), idRtv_.Get(), normalRtv_.Get()};
     context_->OMSetRenderTargets(3, targets, depthDsv_.Get());
-    context_->ClearRenderTargetView(colorRtv_.Get(), clear.data());
+    context_->ClearRenderTargetView(colorRtv_.Get(), viewportBackgroundColor_.data());
     context_->ClearRenderTargetView(idRtv_.Get(), zero.data());
     context_->ClearRenderTargetView(normalRtv_.Get(), zero.data());
     context_->ClearDepthStencilView(depthDsv_.Get(), D3D11_CLEAR_DEPTH, 1.0f, 0);

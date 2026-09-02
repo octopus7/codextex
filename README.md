@@ -64,6 +64,10 @@ The viewport starts in an unlit Base Color mode so PNG texels are displayed
 without lighting multiplication. `Neutral shading` is an optional display and
 capture aid. The first-run docking layout reserves the main central area for the
 3D viewport; `Fit primary view (F)` recenters and tightly frames the editable OBJ.
+Viewport backgrounds use a clearly distinguishable solid blue-gray instead of
+near-black. `Background color` in `Viewport display` changes the solid color for
+every viewport and for subsequent ImageGen captures without affecting mesh or
+reference textures.
 Every viewport renders the same live working texture by default. The main viewport
 alone has an `원본 텍스처 렌더링` checkbox in a rounded top-right viewport overlay;
 it temporarily displays the PNG as originally loaded without changing the shared

@@ -193,6 +193,7 @@ bool Application::Initialize(HINSTANCE instance, const int showCommand, std::str
     if (!renderer_.Initialize(window_, error)) {
         return false;
     }
+    renderer_.SetViewportBackgroundColor(viewportBackgroundColor_);
 
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
@@ -775,6 +776,11 @@ void Application::DrawTools() {
     ImGui::BeginDisabled(!meshLoaded_ || activeProjectionId_.has_value());
     if (ImGui::Button("Fit primary view (F)")) FitCamera();
     ImGui::EndDisabled();
+    if (ImGui::ColorEdit3("Background color", viewportBackgroundColor_.data(),
+                          ImGuiColorEditFlags_NoAlpha | ImGuiColorEditFlags_DisplayRGB |
+                              ImGuiColorEditFlags_PickerHueWheel)) {
+        renderer_.SetViewportBackgroundColor(viewportBackgroundColor_);
+    }
     ImGui::TextDisabled("Shading is off by default; Base Color is shown unchanged.");
 
     if (tab == nullptr) {

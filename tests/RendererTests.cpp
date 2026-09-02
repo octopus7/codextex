@@ -105,6 +105,7 @@ f 1/1 2/2 3/3 4/4
     codextex::CameraState camera;
     camera.pitch = 0;
     camera.distance = 3;
+    renderer.SetViewportBackgroundColor({0.20f, 0.40f, 0.60f});
     renderer.SetOriginalTexturePreview(false);
     renderer.RenderViewport(64, 64, camera);
     codextex::TextureImage workingCapture;
@@ -112,6 +113,12 @@ f 1/1 2/2 3/3 4/4
     const std::size_t center = (32 * 64 + 32) * 4;
     CHECK(workingCapture.Pixels()[center] < 50);
     CHECK(workingCapture.Pixels()[center + 2] > 200);
+    CHECK(workingCapture.Pixels()[0] >= 49);
+    CHECK(workingCapture.Pixels()[0] <= 53);
+    CHECK(workingCapture.Pixels()[1] >= 100);
+    CHECK(workingCapture.Pixels()[1] <= 104);
+    CHECK(workingCapture.Pixels()[2] >= 151);
+    CHECK(workingCapture.Pixels()[2] <= 155);
 
     renderer.SetOriginalTexturePreview(true);
     renderer.RenderViewport(64, 64, camera);
