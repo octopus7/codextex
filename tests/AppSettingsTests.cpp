@@ -71,6 +71,14 @@ TEST_CASE("ImageGen progress uses the latest successful duration without reachin
     CHECK(codextex::EstimateImageGenProgress(150.0, 0) == Catch::Approx(0.45f));
 }
 
+TEST_CASE("ImageGen duration is formatted as minutes and padded seconds") {
+    CHECK(codextex::FormatImageGenDuration(0) == "0:00");
+    CHECK(codextex::FormatImageGenDuration(9) == "0:09");
+    CHECK(codextex::FormatImageGenDuration(65) == "1:05");
+    CHECK(codextex::FormatImageGenDuration(3'661) == "61:01");
+    CHECK(codextex::FormatImageGenDuration(-5) == "0:00");
+}
+
 TEST_CASE("ImageGen prompt history is unique newest first and bounded") {
     codextex::CodexRequestSettings settings;
     codextex::AddImageGenPromptToHistory(settings, "first", 100);

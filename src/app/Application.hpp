@@ -144,6 +144,7 @@ private:
         LocalSideFilter localSideFilter{LocalSideFilter::Both};
         std::uint64_t baseTextureRevision{};
         std::optional<std::chrono::steady_clock::time_point> generationStartedAt;
+        std::optional<std::int64_t> generationDurationSeconds;
         bool generationDurationRecorded{};
     };
     std::vector<ProjectionTab> projectionTabs_;

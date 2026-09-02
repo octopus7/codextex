@@ -43,6 +43,7 @@ void AddImageGenPromptToHistory(CodexRequestSettings& settings,
 [[nodiscard]] float EstimateImageGenProgress(
     double elapsedSeconds,
     std::int64_t lastDurationSeconds) noexcept;
+[[nodiscard]] std::string FormatImageGenDuration(std::int64_t durationSeconds);
 
 bool LoadCodexRequestSettings(const std::filesystem::path& path,
                               CodexRequestSettings& settings,

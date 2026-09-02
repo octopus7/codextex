@@ -77,6 +77,14 @@ float EstimateImageGenProgress(const double elapsedSeconds,
     return static_cast<float>(std::min(overtime, 0.99));
 }
 
+std::string FormatImageGenDuration(const std::int64_t durationSeconds) {
+    const std::int64_t clamped = std::max<std::int64_t>(durationSeconds, 0);
+    const std::int64_t minutes = clamped / 60;
+    const std::int64_t seconds = clamped % 60;
+    return std::to_string(minutes) + ":" + (seconds < 10 ? "0" : "") +
+        std::to_string(seconds);
+}
+
 bool LoadCodexRequestSettings(const std::filesystem::path& path,
                               CodexRequestSettings& settings,
                               bool& loadedFromDisk,

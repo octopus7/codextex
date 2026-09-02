@@ -1196,7 +1196,12 @@ void Application::DrawTools() {
             ImGui::EndDisabled();
         }
         if (tab->projectionLoaded) {
-            ImGui::Text(Tr("Projection: %s"), Narrow(tab->projectionPath.filename()).c_str());
+            std::string projectionLabel = Narrow(tab->projectionPath.filename());
+            if (tab->generationDurationSeconds) {
+                projectionLabel += " (" +
+                    FormatImageGenDuration(*tab->generationDurationSeconds) + ")";
+            }
+            ImGui::Text(Tr("Projection: %s"), projectionLabel.c_str());
         }
 
         SectionHeaderWithHelp(
@@ -1912,6 +1917,7 @@ void Application::RecordGenerationDuration(ProjectionTab& tab) {
         std::chrono::steady_clock::now() - *tab.generationStartedAt).count();
     codexSettings_.lastImageGenDurationSeconds = std::clamp<std::int64_t>(
         std::max<std::int64_t>(duration, 1), 1, 24 * 60 * 60);
+    tab.generationDurationSeconds = codexSettings_.lastImageGenDurationSeconds;
     tab.generationDurationRecorded = true;
 
     CodexRequestSettings settingsToSave = persistedSettings_;
