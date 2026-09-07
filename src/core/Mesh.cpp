@@ -1,10 +1,12 @@
 #include "core/Mesh.hpp"
+#include "core/ModelImport.hpp"
 
 #include <tiny_obj_loader.h>
 
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cfloat>
 #include <cstdint>
 #include <limits>
 #include <string>
@@ -24,11 +26,13 @@ Vec3 Sub(const Vec3& a, const Vec3& b) {
 }
 
 Vec3 Normalize(const Vec3& v) {
-    const float length = std::sqrt(v.x * v.x + v.y * v.y + v.z * v.z);
+    const double length = std::hypot(static_cast<double>(v.x), static_cast<double>(v.y),
+                                     static_cast<double>(v.z));
     if (length < 1.0e-12f) {
         return {0.0f, 1.0f, 0.0f};
     }
-    return {v.x / length, v.y / length, v.z / length};
+    return {static_cast<float>(v.x / length), static_cast<float>(v.y / length),
+            static_cast<float>(v.z / length)};
 }
 
 Vec3 Cross(const Vec3& a, const Vec3& b) {
@@ -185,19 +189,67 @@ bool Mesh::LoadObj(const std::filesystem::path& path, std::string& error) {
         return false;
     }
 
-    sourcePath_ = path;
-    vertices_ = std::move(vertices);
-    indices_ = std::move(indices);
-    boundsMin_ = minBounds;
-    boundsMax_ = maxBounds;
-    uvOverlapCount_ = DetectUvOverlaps();
+    if (!AssignTriangles(path, std::move(vertices), error, true)) return false;
     error = reader.Warning();
     return true;
 }
 
-std::size_t Mesh::DetectUvOverlaps() const {
+bool Mesh::AssignTriangles(const std::filesystem::path& path, std::vector<Vertex> vertices,
+                           std::string& error, const bool validateUvs) {
+    if (vertices.empty() || vertices.size() % 3 != 0 ||
+        vertices.size() / 3 > MaxImportedTriangles) {
+        error = "Model has no triangles or exceeds the 2,000,000 triangle limit.";
+        return false;
+    }
+    Mesh candidate;
+    candidate.sourcePath_ = path;
+    candidate.boundsMin_ = {FLT_MAX, FLT_MAX, FLT_MAX};
+    candidate.boundsMax_ = {-FLT_MAX, -FLT_MAX, -FLT_MAX};
+    candidate.indices_.reserve(vertices.size());
+    for (std::size_t i = 0; i < vertices.size(); ++i) {
+        auto& v = vertices[i];
+        const float values[]{v.position.x, v.position.y, v.position.z,
+                             v.normal.x, v.normal.y, v.normal.z, v.uv.x, v.uv.y};
+        for (const float value : values) {
+            if (!std::isfinite(value) || std::abs(value) > 1.0e12f) {
+                error = "Model contains non-finite or excessively large vertex data.";
+                return false;
+            }
+        }
+        if (validateUvs && (v.uv.x < -1.0e-5f || v.uv.x > 1.00001f ||
+                            v.uv.y < -1.0e-5f || v.uv.y > 1.00001f)) {
+            error = "Editing requires UVs inside a single 0..1 texture atlas.";
+            return false;
+        }
+        if (std::abs(v.normal.x) + std::abs(v.normal.y) + std::abs(v.normal.z) < 1.0e-6f) {
+            const std::size_t first = i / 3 * 3;
+            v.normal = Normalize(Cross(Sub(vertices[first + 1].position, vertices[first].position),
+                                       Sub(vertices[first + 2].position, vertices[first].position)));
+        } else {
+            v.normal = Normalize(v.normal);
+        }
+        v.triangleId = static_cast<std::uint32_t>(i / 3);
+        candidate.indices_.push_back(static_cast<std::uint32_t>(i));
+        candidate.boundsMin_.x = std::min(candidate.boundsMin_.x, v.position.x);
+        candidate.boundsMin_.y = std::min(candidate.boundsMin_.y, v.position.y);
+        candidate.boundsMin_.z = std::min(candidate.boundsMin_.z, v.position.z);
+        candidate.boundsMax_.x = std::max(candidate.boundsMax_.x, v.position.x);
+        candidate.boundsMax_.y = std::max(candidate.boundsMax_.y, v.position.y);
+        candidate.boundsMax_.z = std::max(candidate.boundsMax_.z, v.position.z);
+    }
+    candidate.vertices_ = std::move(vertices);
+    candidate.uvOverlapCount_ = candidate.DetectUvOverlaps();
+    *this = std::move(candidate);
+    error.clear();
+    return true;
+}
+
+std::size_t Mesh::DetectUvOverlaps() {
     constexpr int gridSize = 64;
     constexpr std::size_t maxCandidatePairs = 2'000'000;
+    constexpr std::size_t maxCellEntries = 4'000'000;
+    std::size_t cellEntries = 0;
+    uvOverlapCheckComplete_ = true;
     std::unordered_map<std::uint32_t, std::vector<std::uint32_t>> cells;
     cells.reserve(TriangleCount() * 2);
 
@@ -209,10 +261,15 @@ std::size_t Mesh::DetectUvOverlaps() const {
         const float maxX = std::max({a.x, b.x, c.x});
         const float minY = std::min({a.y, b.y, c.y});
         const float maxY = std::max({a.y, b.y, c.y});
-        const int x0 = std::clamp(static_cast<int>(std::floor(minX * gridSize)), 0, gridSize - 1);
-        const int x1 = std::clamp(static_cast<int>(std::floor(maxX * gridSize)), 0, gridSize - 1);
-        const int y0 = std::clamp(static_cast<int>(std::floor(minY * gridSize)), 0, gridSize - 1);
-        const int y1 = std::clamp(static_cast<int>(std::floor(maxY * gridSize)), 0, gridSize - 1);
+        const int x0 = static_cast<int>(std::clamp(minX * gridSize, 0.0f, 63.0f));
+        const int x1 = static_cast<int>(std::clamp(maxX * gridSize, 0.0f, 63.0f));
+        const int y0 = static_cast<int>(std::clamp(minY * gridSize, 0.0f, 63.0f));
+        const int y1 = static_cast<int>(std::clamp(maxY * gridSize, 0.0f, 63.0f));
+        cellEntries += static_cast<std::size_t>((x1 - x0 + 1) * (y1 - y0 + 1));
+        if (cellEntries > maxCellEntries) {
+            uvOverlapCheckComplete_ = false;
+            return 0;
+        }
         for (int y = y0; y <= y1; ++y) {
             for (int x = x0; x <= x1; ++x) {
                 cells[static_cast<std::uint32_t>(y * gridSize + x)].push_back(triangle);
@@ -233,6 +290,7 @@ std::size_t Mesh::DetectUvOverlaps() const {
                     continue;
                 }
                 if (visited.size() > maxCandidatePairs) {
+                    uvOverlapCheckComplete_ = false;
                     return overlaps;
                 }
                 std::array<Vec2, 3> lhs{};

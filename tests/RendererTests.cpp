@@ -3,6 +3,7 @@
 #include <catch2/catch_test_macros.hpp>
 #include <Windows.h>
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <filesystem>
@@ -42,6 +43,241 @@ private:
 };
 
 } // namespace
+
+namespace {
+
+codextex::TextureImage ImportTestTexture(const std::array<std::uint8_t, 4>& color) {
+    std::vector<std::uint8_t> pixels(16 * 16 * 4);
+    for (std::size_t i = 0; i < pixels.size(); i += 4)
+        std::copy(color.begin(), color.end(), pixels.begin() + i);
+    codextex::TextureImage image;
+    image.Assign(16, 16, pixels);
+    return image;
+}
+
+codextex::ModelSurface ImportTestSurface(const float left, const float right, const float z,
+                                        const std::array<std::uint8_t, 4>& color) {
+    codextex::ModelSurface surface;
+    std::vector<codextex::Vertex> vertices{
+        {{left, -1, z}, {0, 0, 1}, {0, 1}}, {{right, -1, z}, {0, 0, 1}, {1, 1}},
+        {{right, 1, z}, {0, 0, 1}, {1, 0}}, {{left, -1, z}, {0, 0, 1}, {0, 1}},
+        {{right, 1, z}, {0, 0, 1}, {1, 0}}, {{left, 1, z}, {0, 0, 1}, {0, 0}},
+    };
+    std::string error;
+    REQUIRE(surface.mesh.AssignTriangles("import-test.glb", std::move(vertices), error));
+    surface.baseColor = ImportTestTexture(color);
+    surface.appearance.wrapU = surface.appearance.wrapV = codextex::TextureWrap::Clamp;
+    return surface;
+}
+
+} // namespace
+
+TEST_CASE("WARP imported alpha-mask context occludes only opaque texels and is never baked") {
+    HiddenWindow window;
+    codextex::Renderer renderer;
+    std::string error;
+    REQUIRE(renderer.Initialize(window.Get(), error, true));
+    codextex::ImportedModel model;
+    model.surfaces.push_back(ImportTestSurface(-1, 1, 0, {220, 20, 10, 255}));
+    model.surfaces[0].appearance.doubleSided = false;
+    model.surfaces.push_back(ImportTestSurface(-1, 1, 0.2f, {10, 20, 240, 255}));
+    auto& context = model.surfaces[1];
+    context.appearance.alphaMode = codextex::MaterialAlphaMode::Mask;
+    for (std::size_t y = 0; y < 16; ++y)
+        for (std::size_t x = 0; x < 8; ++x) context.baseColor.Pixels()[(y * 16 + x) * 4 + 3] = 0;
+    REQUIRE(renderer.SetImportedModel(model, 0, model.surfaces[0].baseColor, error));
+    renderer.SetReferenceAssetsVisible(false);
+    codextex::CameraState camera;
+    camera.pitch = 0;
+    camera.distance = 3;
+    renderer.RenderViewport(128, 128, camera);
+    CHECK(renderer.PickTriangle(32, 64) == UINT32_MAX);
+    CHECK(renderer.PickTriangle(96, 64) < 2);
+    codextex::TextureImage capture;
+    codextex::Renderer::ProjectionFrame frame;
+    REQUIRE(renderer.CaptureFrame(camera, capture, frame, error));
+    CHECK(capture.Pixels()[(64 * 128 + 32) * 4 + 2] > 220);
+    CHECK(capture.Pixels()[(64 * 128 + 96) * 4] > 200);
+    REQUIRE(renderer.SetProjectionImage(ImportTestTexture({10, 230, 20, 255}), error));
+    codextex::MaskImage mask;
+    mask.Resize(16, 16, true);
+    REQUIRE(renderer.SetMask(mask, 0));
+    REQUIRE(renderer.BakeProjection(75, error));
+    codextex::TextureImage baked;
+    REQUIRE(renderer.ReadWorkingTexture(baked, error));
+    CHECK(baked.Pixels()[(8 * 16 + 4) * 4 + 1] > 200);
+    CHECK(baked.Pixels()[(8 * 16 + 12) * 4] > 200);
+    renderer.RenderViewport(128, 128, camera);
+    REQUIRE(renderer.CaptureFrame(camera, capture, error));
+    CHECK(capture.Pixels()[(64 * 128 + 32) * 4 + 2] > 220);
+}
+
+TEST_CASE("WARP imported selected alpha holes stay unpainted and material factors preserve raw textures") {
+    HiddenWindow window;
+    codextex::Renderer renderer;
+    std::string error;
+    REQUIRE(renderer.Initialize(window.Get(), error, true));
+    codextex::ImportedModel model;
+    model.surfaces.push_back(ImportTestSurface(-1, 1, 0, {200, 20, 10, 255}));
+    auto& selected = model.surfaces[0];
+    selected.appearance.baseColorFactor = {0.5f, 0.5f, 0.5f, 1};
+    selected.appearance.alphaMode = codextex::MaterialAlphaMode::Mask;
+    for (std::size_t y = 0; y < 16; ++y)
+        for (std::size_t x = 0; x < 8; ++x) selected.baseColor.Pixels()[(y * 16 + x) * 4 + 3] = 0;
+    REQUIRE(renderer.SetImportedModel(model, 0, selected.baseColor, error));
+    codextex::CameraState camera;
+    camera.pitch = 0;
+    camera.distance = 3;
+    renderer.RenderViewport(128, 128, camera);
+    CHECK(renderer.PickTriangle(96, 64) == UINT32_MAX);
+    CHECK(renderer.PickTriangle(32, 64) < 2);
+    codextex::TextureImage capture;
+    REQUIRE(renderer.CaptureFrame(camera, capture, error));
+    REQUIRE(renderer.SetProjectionImage(ImportTestTexture({100, 0, 0, 255}), error));
+    codextex::MaskImage mask;
+    mask.Resize(16, 16, true);
+    REQUIRE(renderer.SetMask(mask, 0));
+    REQUIRE(renderer.BakeProjection(75, error));
+    codextex::TextureImage baked;
+    REQUIRE(renderer.ReadWorkingTexture(baked, error));
+    CHECK(baked.Pixels()[(8 * 16 + 4) * 4] == 200);
+    CHECK(baked.Pixels()[(8 * 16 + 4) * 4 + 3] == 0);
+    CHECK(baked.Pixels()[(8 * 16 + 12) * 4] > 130);
+    CHECK(baked.Pixels()[(8 * 16 + 12) * 4] < 145);
+    renderer.RenderViewport(128, 128, camera);
+    REQUIRE(renderer.CaptureFrame(camera, capture, error));
+    CHECK(std::abs(static_cast<int>(capture.Pixels()[(64 * 128 + 32) * 4]) - 100) <= 2);
+}
+
+TEST_CASE("WARP failed imported model upload preserves the scene and successful replacement invalidates old frames") {
+    HiddenWindow window;
+    codextex::Renderer renderer;
+    std::string error;
+    REQUIRE(renderer.Initialize(window.Get(), error, true));
+    codextex::ImportedModel model;
+    model.surfaces.push_back(ImportTestSurface(-1, 1, 0, {200, 20, 10, 255}));
+    REQUIRE(renderer.SetImportedModel(model, 0, model.surfaces[0].baseColor, error));
+    codextex::CameraState camera;
+    camera.pitch = 0;
+    renderer.RenderViewport(128, 128, camera);
+    codextex::TextureImage capture;
+    codextex::Renderer::ProjectionFrame frame;
+    REQUIRE(renderer.CaptureFrame(camera, capture, frame, error));
+    auto invalid = model;
+    invalid.surfaces.push_back(ImportTestSurface(-1, 1, 0.2f, {10, 20, 240, 255}));
+    invalid.surfaces.back().baseColor = {};
+    CHECK_FALSE(renderer.SetImportedModel(invalid, 0, ImportTestTexture({0, 0, 255, 255}), error));
+    CHECK(renderer.HasFrozenFrame());
+    renderer.RenderViewport(128, 128, camera);
+    CHECK(renderer.PickTriangle(64, 64) < 2);
+    codextex::TextureImage retained;
+    REQUIRE(renderer.ReadWorkingTexture(retained, error));
+    CHECK(retained.Pixels() == model.surfaces[0].baseColor.Pixels());
+    REQUIRE(renderer.SetProjectionImage(ImportTestTexture({0, 230, 0, 255}), error));
+    codextex::MaskImage mask;
+    mask.Resize(16, 16, true);
+    REQUIRE(renderer.SetMask(mask, 0));
+    REQUIRE(renderer.BakeProjection(75, error));
+    REQUIRE(renderer.SetMesh(model.surfaces[0].mesh, error));
+    renderer.ActivateProjectionFrame(frame);
+    REQUIRE(renderer.ReadWorkingTexture(retained, error));
+    CHECK_FALSE(renderer.BakeProjection(75, error));
+    CHECK(error.find("different model") != std::string::npos);
+    codextex::TextureImage after;
+    REQUIRE(renderer.ReadWorkingTexture(after, error));
+    CHECK(after.Pixels() == retained.Pixels());
+}
+
+TEST_CASE("WARP imported context sharing a texture follows working and original views") {
+    HiddenWindow window;
+    codextex::Renderer renderer;
+    std::string error;
+    REQUIRE(renderer.Initialize(window.Get(), error, true));
+    codextex::ImportedModel model;
+    model.surfaces.push_back(ImportTestSurface(-1.8f, -0.2f, 0, {220, 10, 10, 255}));
+    model.surfaces.push_back(ImportTestSurface(0.2f, 1.8f, 0, {220, 10, 10, 255}));
+    model.surfaces[0].textureKey = model.surfaces[1].textureKey = "shared-image";
+    REQUIRE(renderer.SetImportedModel(model, 0, model.surfaces[0].baseColor, error));
+    REQUIRE(renderer.SetWorkingTexture(ImportTestTexture({10, 230, 10, 255}), error));
+    renderer.SetReferenceAssetsVisible(false);
+    codextex::CameraState camera;
+    camera.pitch = 0;
+    camera.distance = 5;
+    renderer.RenderViewport(128, 128, camera);
+    codextex::TextureImage capture;
+    REQUIRE(renderer.CaptureFrame(camera, capture, error));
+    CHECK(capture.Pixels()[(64 * 128 + 33) * 4 + 1] > 220);
+    CHECK(capture.Pixels()[(64 * 128 + 95) * 4 + 1] > 220);
+    CHECK(renderer.PickTriangle(33, 64) == UINT32_MAX);
+    CHECK(renderer.PickTriangle(95, 64) < 2);
+    renderer.SetOriginalTexturePreview(true);
+    REQUIRE(renderer.CaptureFrame(camera, capture, error));
+    CHECK(capture.Pixels()[(64 * 128 + 33) * 4] > 210);
+    CHECK(capture.Pixels()[(64 * 128 + 95) * 4] > 210);
+}
+
+TEST_CASE("WARP imported references upload atomically and obey reference visibility") {
+    HiddenWindow window;
+    codextex::Renderer renderer;
+    std::string error;
+    REQUIRE(renderer.Initialize(window.Get(), error, true));
+    auto selected = ImportTestSurface(-1, 1, 0, {220, 10, 10, 255});
+    REQUIRE(renderer.SetMesh(selected.mesh, error));
+    REQUIRE(renderer.SetSourceAndWorkingTexture(selected.baseColor, error));
+    codextex::ImportedModel reference;
+    reference.surfaces.push_back(ImportTestSurface(-1, 1, 0.2f, {10, 10, 230, 255}));
+    auto invalid = reference;
+    invalid.surfaces.push_back(ImportTestSurface(-1, 1, 0.4f, {10, 230, 10, 255}));
+    invalid.surfaces.back().baseColor = {};
+    CHECK_FALSE(renderer.AddReferenceModel(invalid, error));
+    codextex::CameraState camera;
+    camera.pitch = 0;
+    renderer.RenderViewport(128, 128, camera);
+    CHECK(renderer.PickTriangle(64, 64) < 2);
+    REQUIRE(renderer.AddReferenceModel(reference, error));
+    renderer.RenderViewport(128, 128, camera);
+    CHECK(renderer.PickTriangle(64, 64) == UINT32_MAX);
+    renderer.SetReferenceAssetsVisible(false);
+    renderer.RenderViewport(128, 128, camera);
+    CHECK(renderer.PickTriangle(64, 64) < 2);
+}
+
+TEST_CASE("WARP imported context honors repeat and mirror texture wrapping") {
+    HiddenWindow window;
+    codextex::Renderer renderer;
+    std::string error;
+    REQUIRE(renderer.Initialize(window.Get(), error, true));
+    codextex::ImportedModel model;
+    model.surfaces.push_back(ImportTestSurface(-1, 1, 0, {220, 10, 10, 255}));
+    model.surfaces.push_back(ImportTestSurface(-1, 1, 0.2f, {10, 10, 230, 255}));
+    auto& context = model.surfaces.back();
+    auto vertices = context.mesh.Vertices();
+    for (auto& vertex : vertices) vertex.uv.x += 1.0f;
+    REQUIRE(context.mesh.AssignTriangles("wrapped-context.glb", std::move(vertices), error));
+    for (std::size_t y = 0; y < 16; ++y) {
+        for (std::size_t x = 8; x < 16; ++x) {
+            context.baseColor.Pixels()[(y * 16 + x) * 4] = 230;
+            context.baseColor.Pixels()[(y * 16 + x) * 4 + 2] = 10;
+        }
+    }
+    context.appearance.wrapU = codextex::TextureWrap::Repeat;
+    REQUIRE(renderer.SetImportedModel(model, 0, model.surfaces[0].baseColor, error));
+    codextex::CameraState camera;
+    camera.pitch = 0;
+    renderer.RenderViewport(128, 128, camera);
+    codextex::TextureImage capture;
+    REQUIRE(renderer.CaptureFrame(camera, capture, error));
+    CHECK(capture.Pixels()[(64 * 128 + 96) * 4 + 2] > 220);
+    CHECK(capture.Pixels()[(64 * 128 + 32) * 4] > 220);
+    context.appearance.wrapU = codextex::TextureWrap::Mirror;
+    REQUIRE(renderer.SetImportedModel(model, 0, model.surfaces[0].baseColor, error));
+    REQUIRE(renderer.CaptureFrame(camera, capture, error));
+    CHECK(capture.Pixels()[(64 * 128 + 96) * 4] > 220);
+    CHECK(capture.Pixels()[(64 * 128 + 32) * 4 + 2] > 220);
+    REQUIRE(renderer.SetMesh(model.surfaces[0].mesh, error));
+    renderer.RenderViewport(128, 128, camera);
+    CHECK(renderer.PickTriangle(64, 64) < 2);
+}
 
 TEST_CASE("D3D11 WARP initializes viewport bake and GPU mask shaders") {
     HiddenWindow window;

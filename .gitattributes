@@ -1,0 +1,2 @@
+# Preserve pinned third-party distributions exactly, including upstream whitespace.
+third_party/** linguist-vendored -whitespace

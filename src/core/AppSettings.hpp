@@ -25,6 +25,10 @@ struct CodexRequestSettings {
     // pair is neither persisted nor offered by the UI.
     std::filesystem::path recentObjPath;
     std::filesystem::path recentTexturePath;
+    // -1 is the legacy OBJ + separate PNG workflow. Imported materials can use
+    // their embedded/default image when recentTexturePath is empty.
+    std::int64_t recentSurfaceIndex{-1};
+    std::string recentSurfaceName;
     std::vector<ImageGenPromptHistoryEntry> imageGenPromptHistory;
     // Zero means no successful ImageGen duration has been observed yet.
     std::int64_t lastImageGenDurationSeconds{};

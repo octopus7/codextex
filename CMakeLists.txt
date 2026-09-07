@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.28)
-project(CodexTex VERSION 0.1.0 LANGUAGES CXX)
+project(CodexTex VERSION 0.1.0 LANGUAGES C CXX)
 
 if(NOT WIN32)
   message(FATAL_ERROR "CodexTex is Windows-only")
@@ -16,11 +16,19 @@ find_package(imgui CONFIG REQUIRED)
 find_package(nlohmann_json CONFIG REQUIRED)
 find_package(tinyobjloader CONFIG REQUIRED)
 
+# Pinned source distributions and their licenses live in third_party/.
+add_library(codextex_ufbx STATIC third_party/ufbx/ufbx.c)
+target_include_directories(codextex_ufbx PUBLIC third_party/ufbx)
+set_target_properties(codextex_ufbx PROPERTIES C_STANDARD 99)
+
 add_library(codextex_core
   src/core/AppSettings.cpp
   src/core/GenerationArchive.cpp
   src/core/Localization.cpp
   src/core/Mesh.cpp
+  src/core/ModelImport.cpp
+  src/core/FbxImporter.cpp
+  src/core/GlbImporter.cpp
   src/core/TextureImage.cpp
   src/core/TextureHistory.cpp
   src/core/Mask.cpp
@@ -33,11 +41,13 @@ target_link_libraries(codextex_core
     Microsoft::DirectXTex
     nlohmann_json::nlohmann_json
     tinyobjloader::tinyobjloader
+    codextex_ufbx
 )
 
 add_executable(CodexTex WIN32
   src/main.cpp
   src/app/Application.cpp
+  src/app/ModelImportUi.cpp
   src/app/KeyboardShortcuts.cpp
   src/app/ProjectionWorkspace.cpp
   src/graphics/Renderer.cpp
@@ -55,6 +65,13 @@ add_custom_command(TARGET CodexTex POST_BUILD
   COMMAND ${CMAKE_COMMAND} -E copy_if_different
     "$<TARGET_FILE:Microsoft::DirectXTex>"
     "$<TARGET_FILE_DIR:CodexTex>"
+  COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:CodexTex>/licenses"
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different
+    "${CMAKE_SOURCE_DIR}/third_party/ufbx/LICENSE"
+    "$<TARGET_FILE_DIR:CodexTex>/licenses/ufbx.txt"
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different
+    "${CMAKE_SOURCE_DIR}/third_party/cgltf/LICENSE"
+    "$<TARGET_FILE_DIR:CodexTex>/licenses/cgltf.txt"
 )
 set_property(TARGET CodexTex PROPERTY VS_DEBUGGER_WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
 
@@ -85,6 +102,8 @@ if(CODEXTEX_BUILD_TESTS)
     tests/KeyboardShortcutsTests.cpp
     tests/ProjectionWorkspaceTests.cpp
     tests/MeshTests.cpp
+    tests/FbxImportTests.cpp
+    tests/GlbImportTests.cpp
     tests/MaskTests.cpp
     tests/LocalizationTests.cpp
     tests/PromptBuilderTests.cpp

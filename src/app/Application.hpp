@@ -7,6 +7,7 @@
 #include "core/Mask.hpp"
 #include "core/ProjectionViewTransform.hpp"
 #include "core/Mesh.hpp"
+#include "core/ModelImport.hpp"
 #include "core/TextureImage.hpp"
 #include "core/TextureHistory.hpp"
 #include "graphics/Renderer.hpp"
@@ -17,6 +18,7 @@
 #include <chrono>
 #include <cstdint>
 #include <filesystem>
+#include <future>
 #include <optional>
 #include <string>
 #include <vector>
@@ -49,6 +51,13 @@ private:
     void ApplyDpiScale(float scale);
 
     bool OpenObj();
+    bool BeginModelImport(const std::filesystem::path& path, bool reference = false,
+                          bool recent = false);
+    void PollModelImport();
+    void DrawModelImport();
+    bool ActivateModelSurface(std::size_t index, ImportedModel* replacement = nullptr,
+                              const std::filesystem::path& overrideTexture = {});
+    void ResetMeshSelection();
     bool OpenTexture();
     bool OpenRecentPrimaryAssets();
     void RememberRecentPrimaryAssets();
@@ -111,8 +120,27 @@ private:
         TextureImage texture;
         std::filesystem::path objPath;
         std::filesystem::path texturePath;
+        std::optional<ImportedModel> model;
     };
     std::vector<ReferenceAsset> referenceAssets_;
+
+    struct ModelImportResult {
+        ImportedModel model;
+        std::string error;
+        bool success{};
+    };
+    std::future<ModelImportResult> modelImportFuture_;
+    std::optional<ImportedModel> pendingModel_;
+    std::optional<ImportedModel> importedModel_;
+    std::size_t selectedModelSurface_{};
+    std::size_t pendingModelSurface_{};
+    bool importingReference_{};
+    bool importingRecent_{};
+    bool discardImport_{};
+    bool openImportPopup_{};
+    std::int64_t pendingRecentSurfaceIndex_{-1};
+    std::string pendingRecentSurfaceName_;
+    std::filesystem::path pendingOverrideTexture_;
 
     ProjectionWorkspaces projectionTabs_;
     std::optional<std::uint64_t> workingPreviewProjectionId_;

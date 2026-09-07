@@ -7,6 +7,7 @@
 #include <array>
 #include <cmath>
 #include <cstring>
+#include <limits>
 #include <numbers>
 #include <unordered_set>
 
@@ -23,6 +24,8 @@ struct ShaderConstants {
     float sideFilter[4]{};
     float projectionRegion[4]{};
     float projectionTransform[4]{};
+    float baseColorFactor[4]{1, 1, 1, 1};
+    float materialParameters[4]{};
 };
 
 struct MaskConstants {
@@ -41,12 +44,15 @@ cbuffer Constants : register(b0) {
     float4 sideFilter;
     float4 projectionRegion;
     float4 projectionTransform;
+    float4 baseColorFactor;
+    float4 materialParameters;
 };
 Texture2D<float4> baseColor : register(t0);
 StructuredBuffer<uint> selectedFaces : register(t1);
 Texture2D<float4> projectionPreview : register(t2);
 Texture2D<float> maskPreview : register(t3);
 SamplerState linearSampler : register(s0);
+SamplerState materialSampler : register(s1);
 
 struct VSInput {
     float3 position : POSITION;
@@ -80,7 +86,9 @@ struct PSOutput {
 };
 PSOutput PSMain(VSOutput input) {
     PSOutput output;
-    const float3 albedo = baseColor.Sample(linearSampler, input.uv).rgb;
+    const float4 sample = baseColor.Sample(materialSampler, input.uv) * baseColorFactor;
+    if (materialParameters.x > 0.5 && materialParameters.x < 1.5 && sample.a < materialParameters.y) discard;
+    const float3 albedo = sample.rgb;
     float3 color = albedo;
     if (parameters.w > 0.5) {
         const float3 lightDirection = normalize(float3(-0.35, 0.75, -0.55));
@@ -115,7 +123,9 @@ PSOutput PSMain(VSOutput input) {
 
 PSOutput PSReference(VSOutput input) {
     PSOutput output;
-    const float3 albedo = baseColor.Sample(linearSampler, input.uv).rgb;
+    const float4 sample = baseColor.Sample(materialSampler, input.uv) * baseColorFactor;
+    if (materialParameters.x > 0.5 && materialParameters.x < 1.5 && sample.a < materialParameters.y) discard;
+    const float3 albedo = sample.rgb;
     float3 color = albedo;
     if (parameters.w > 0.5) {
         const float3 lightDirection = normalize(float3(-0.35, 0.75, -0.55));
@@ -138,12 +148,16 @@ cbuffer Constants : register(b0) {
     float4 sideFilter;
     float4 projectionRegion;
     float4 projectionTransform;
+    float4 baseColorFactor;
+    float4 materialParameters;
 };
 Texture2D<float4> projectionImage : register(t0);
 Texture2D<float> capturedDepth : register(t1);
 Texture2D<float> projectionMask : register(t2);
 Texture2D<uint> capturedTriangleIds : register(t3);
+Texture2D<float4> editableBaseColor : register(t4);
 SamplerState linearSampler : register(s0);
+SamplerState materialSampler : register(s1);
 
 struct VSInput {
     float3 position : POSITION;
@@ -158,6 +172,7 @@ struct VSOutput {
     float3 normal : TEXCOORD2;
     float3 localPosition : TEXCOORD3;
     nointerpolation uint triangleId : TEXCOORD4;
+    float2 uv : TEXCOORD5;
 };
 VSOutput VSMain(VSInput input) {
     VSOutput output;
@@ -167,6 +182,7 @@ VSOutput VSMain(VSInput input) {
     output.normal = normalize(mul(float4(input.normal, 0.0), world).xyz);
     output.localPosition = input.position;
     output.triangleId = input.triangleId;
+    output.uv = input.uv;
     return output;
 }
 float4 PSMain(VSOutput input) : SV_TARGET0 {
@@ -180,6 +196,8 @@ float4 PSMain(VSOutput input) : SV_TARGET0 {
     const float2 depthGradient = abs(determinant) > 1.0e-20
         ? float2(dx.z * dy.y - dy.z * dx.y, dy.z * dx.x - dx.z * dy.x) / determinant
         : float2(0.0, 0.0);
+    if (materialParameters.x > 0.5 && materialParameters.x < 1.5 &&
+        editableBaseColor.SampleLevel(materialSampler, input.uv, 0).a * baseColorFactor.a < materialParameters.y) discard;
     if (sideFilter.x > 0.5 && sideFilter.x < 1.5 && input.localPosition.x < sideFilter.y) discard;
     if (sideFilter.x > 1.5 && input.localPosition.x > sideFilter.y) discard;
     if (input.captureClip.w <= 0.0) discard;
@@ -221,7 +239,7 @@ float4 PSMain(VSOutput input) : SV_TARGET0 {
     const float mask = projectionMask.SampleLevel(linearSampler, projectionUv, 0);
     if (mask <= 0.0001) discard;
     const float3 generated = projectionImage.SampleLevel(linearSampler, imageUv, 0).rgb;
-    return float4(generated, mask);
+    return float4(saturate(generated / max(baseColorFactor.rgb, 1.0e-6)), mask);
 }
 )HLSL";
 
@@ -506,6 +524,8 @@ bool Renderer::CreateBufferResources(std::string& error) {
     rasterDesc.DepthClipEnable = TRUE;
     rasterDesc.MultisampleEnable = FALSE;
     if (SUCCEEDED(hr)) hr = device_->CreateRasterizerState(&rasterDesc, rasterizer_.GetAddressOf());
+    rasterDesc.CullMode = D3D11_CULL_BACK;
+    if (SUCCEEDED(hr)) hr = device_->CreateRasterizerState(&rasterDesc, backCullRasterizer_.GetAddressOf());
 
     D3D11_BLEND_DESC blendDesc{};
     auto& target = blendDesc.RenderTarget[0];
@@ -526,28 +546,172 @@ bool Renderer::CreateBufferResources(std::string& error) {
 }
 
 bool Renderer::SetMesh(const Mesh& mesh, std::string& error) {
-    vertices_ = mesh.Vertices();
-    allIndices_ = mesh.Indices();
-    hiddenFaces_.assign(mesh.TriangleCount(), 0);
-    selectedFaces_.assign(mesh.TriangleCount(), 0);
-    if (vertices_.empty()) {
-        error = "Mesh contains no vertices.";
+    if (!device_ || mesh.Vertices().empty() || mesh.Indices().empty() ||
+        mesh.Indices().size() % 3 != 0 ||
+        mesh.Vertices().size() > std::numeric_limits<UINT>::max() / sizeof(Vertex) ||
+        mesh.Indices().size() > std::numeric_limits<UINT>::max() / sizeof(std::uint32_t)) {
+        error = "Mesh geometry is empty, too large, or the renderer is unavailable.";
         return false;
     }
-    localCenterX_ = (mesh.BoundsMin().x + mesh.BoundsMax().x) * 0.5f;
-    localSideFilter_ = LocalSideFilter::Both;
+    for (std::size_t i = 0; i < mesh.Indices().size(); ++i) {
+        if (mesh.Indices()[i] >= mesh.Vertices().size() ||
+            mesh.Vertices()[mesh.Indices()[i]].triangleId != i / 3) {
+            error = "Mesh triangle IDs or vertex indices are inconsistent.";
+            return false;
+        }
+    }
+    auto vertices = mesh.Vertices();
+    auto indices = mesh.Indices();
+    auto visible = indices;
+    std::vector<std::uint8_t> hidden(mesh.TriangleCount(), 0);
+    std::vector<std::uint8_t> selected(mesh.TriangleCount(), 0);
+    std::vector<std::uint32_t> selection(mesh.TriangleCount(), 0);
+    ComPtr<ID3D11Buffer> vertexBuffer, indexBuffer, selectionBuffer;
+    ComPtr<ID3D11ShaderResourceView> selectionSrv;
     D3D11_BUFFER_DESC desc{};
-    desc.ByteWidth = static_cast<UINT>(vertices_.size() * sizeof(Vertex));
+    desc.ByteWidth = static_cast<UINT>(vertices.size() * sizeof(Vertex));
     desc.Usage = D3D11_USAGE_IMMUTABLE;
     desc.BindFlags = D3D11_BIND_VERTEX_BUFFER;
-    D3D11_SUBRESOURCE_DATA data{vertices_.data(), 0, 0};
-    const HRESULT hr = device_->CreateBuffer(&desc, &data, vertexBuffer_.ReleaseAndGetAddressOf());
+    D3D11_SUBRESOURCE_DATA data{vertices.data(), 0, 0};
+    HRESULT hr = device_->CreateBuffer(&desc, &data, vertexBuffer.GetAddressOf());
+    desc.ByteWidth = static_cast<UINT>(indices.size() * sizeof(std::uint32_t));
+    desc.BindFlags = D3D11_BIND_INDEX_BUFFER;
+    data.pSysMem = indices.data();
+    if (SUCCEEDED(hr)) hr = device_->CreateBuffer(&desc, &data, indexBuffer.GetAddressOf());
+    desc.ByteWidth = static_cast<UINT>(selection.size() * sizeof(std::uint32_t));
+    desc.Usage = D3D11_USAGE_DEFAULT;
+    desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+    desc.MiscFlags = D3D11_RESOURCE_MISC_BUFFER_STRUCTURED;
+    desc.StructureByteStride = sizeof(std::uint32_t);
+    data.pSysMem = selection.data();
+    if (SUCCEEDED(hr)) hr = device_->CreateBuffer(&desc, &data, selectionBuffer.GetAddressOf());
+    D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc{};
+    srvDesc.Format = DXGI_FORMAT_UNKNOWN;
+    srvDesc.ViewDimension = D3D11_SRV_DIMENSION_BUFFER;
+    srvDesc.Buffer.NumElements = static_cast<UINT>(selection.size());
+    if (SUCCEEDED(hr)) hr = device_->CreateShaderResourceView(selectionBuffer.Get(), &srvDesc,
+                                                            selectionSrv.GetAddressOf());
     if (FAILED(hr)) {
-        error = HrError("Could not upload the OBJ vertex buffer", hr);
+        error = HrError("Could not upload mesh buffers", hr);
         return false;
     }
-    UpdateVisibleIndexBuffer();
-    UpdateSelectionBuffer();
+    vertices_ = std::move(vertices);
+    allIndices_ = std::move(indices);
+    visibleIndices_ = std::move(visible);
+    hiddenFaces_ = std::move(hidden);
+    selectedFaces_ = std::move(selected);
+    vertexBuffer_ = std::move(vertexBuffer);
+    visibleIndexBuffer_ = std::move(indexBuffer);
+    selectionBuffer_ = std::move(selectionBuffer);
+    selectionSrv_ = std::move(selectionSrv);
+    localCenterX_ = (mesh.BoundsMin().x + mesh.BoundsMax().x) * 0.5f;
+    localSideFilter_ = LocalSideFilter::Both;
+    importedContextAssets_.clear();
+    editableAppearance_ = MaterialAppearance{};
+    editableAppearance_.wrapU = editableAppearance_.wrapV = TextureWrap::Clamp;
+    editableSampler_.Reset();
+    workingProjectionPreviewEnabled_ = false;
+    projectionPreviewMode_ = ProjectionPreviewMode::Disabled;
+    ++meshRevision_;
+    ClearFrozenFrame();
+    error.clear();
+    return true;
+}
+
+bool Renderer::CreateMaterialSampler(const MaterialAppearance& appearance,
+                                     ComPtr<ID3D11SamplerState>& sampler, std::string& error) {
+    const auto address = [](const TextureWrap wrap) {
+        switch (wrap) {
+        case TextureWrap::Repeat: return D3D11_TEXTURE_ADDRESS_WRAP;
+        case TextureWrap::Mirror: return D3D11_TEXTURE_ADDRESS_MIRROR;
+        default: return D3D11_TEXTURE_ADDRESS_CLAMP;
+        }
+    };
+    D3D11_SAMPLER_DESC desc{};
+    desc.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR;
+    desc.AddressU = address(appearance.wrapU);
+    desc.AddressV = address(appearance.wrapV);
+    desc.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP;
+    desc.MaxLOD = D3D11_FLOAT32_MAX;
+    const HRESULT hr = device_->CreateSamplerState(&desc, sampler.GetAddressOf());
+    if (FAILED(hr)) {
+        error = HrError("Could not create the material texture sampler", hr);
+        return false;
+    }
+    return true;
+}
+
+bool Renderer::SetImportedModel(const ImportedModel& model, const std::size_t selectedSurface,
+                                const TextureImage& selectedTexture, std::string& error) {
+    if (!device_ || selectedSurface >= model.surfaces.size()) {
+        error = "Select a valid model surface before loading it.";
+        return false;
+    }
+    const ModelSurface& surface = model.surfaces[selectedSurface];
+    if (!surface.editError.empty()) {
+        error = surface.editError;
+        return false;
+    }
+    if (surface.appearance.alphaMode == MaterialAlphaMode::Blend ||
+        std::any_of(surface.appearance.baseColorFactor.begin(), surface.appearance.baseColorFactor.begin() + 3,
+            [](const float value) { return !std::isfinite(value) || value < 0.0001f; })) {
+        error = "The selected material cannot be edited: transparent blending or zero color factors.";
+        return false;
+    }
+    // Prepare every CPU and GPU resource without disturbing the live scene.
+    Renderer next;
+    next.device_ = device_;
+    if (!next.SetMesh(surface.mesh, error) ||
+        !next.SetSourceAndWorkingTexture(selectedTexture, error) ||
+        !CreateMaterialSampler(surface.appearance, next.editableSampler_, error)) return false;
+    next.editableAppearance_ = surface.appearance;
+    for (std::size_t i = 0; i < model.surfaces.size(); ++i) {
+        if (i == selectedSurface) continue;
+        const ModelSurface& contextSurface = model.surfaces[i];
+        // Reuse the checked upload path. The selected texture is never baked
+        // into these buffers; their IDs are always zero in the capture.
+        Renderer geometry;
+        geometry.device_ = device_;
+        if (!geometry.SetMesh(contextSurface.mesh, error)) return false;
+        ReferenceGpuAsset asset;
+        asset.vertexBuffer = std::move(geometry.vertexBuffer_);
+        asset.indexBuffer = std::move(geometry.visibleIndexBuffer_);
+        asset.indexCount = static_cast<std::uint32_t>(contextSurface.mesh.Indices().size());
+        asset.appearance = contextSurface.appearance;
+        asset.sharesWorkingTexture = !surface.textureKey.empty() &&
+            surface.textureKey == contextSurface.textureKey;
+        if (!CreateMaterialSampler(asset.appearance, asset.sampler, error)) return false;
+        if (!asset.sharesWorkingTexture && !UploadRgbaTexture(contextSurface.baseColor, false,
+                asset.texture, asset.textureSrv, nullptr, error)) return false;
+        next.importedContextAssets_.push_back(std::move(asset));
+    }
+    vertices_ = std::move(next.vertices_);
+    allIndices_ = std::move(next.allIndices_);
+    visibleIndices_ = std::move(next.visibleIndices_);
+    hiddenFaces_ = std::move(next.hiddenFaces_);
+    selectedFaces_ = std::move(next.selectedFaces_);
+    vertexBuffer_ = std::move(next.vertexBuffer_);
+    visibleIndexBuffer_ = std::move(next.visibleIndexBuffer_);
+    selectionBuffer_ = std::move(next.selectionBuffer_);
+    selectionSrv_ = std::move(next.selectionSrv_);
+    importedContextAssets_ = std::move(next.importedContextAssets_);
+    editableAppearance_ = next.editableAppearance_;
+    editableSampler_ = std::move(next.editableSampler_);
+    originalTexture_ = std::move(next.originalTexture_);
+    originalSrv_ = std::move(next.originalSrv_);
+    workingTexture_ = std::move(next.workingTexture_);
+    workingSrv_ = std::move(next.workingSrv_);
+    workingRtv_ = std::move(next.workingRtv_);
+    textureWidth_ = next.textureWidth_;
+    textureHeight_ = next.textureHeight_;
+    localCenterX_ = next.localCenterX_;
+    localSideFilter_ = LocalSideFilter::Both;
+    workingProjectionPreviewEnabled_ = false;
+    originalTexturePreview_ = false;
+    projectionPreviewMode_ = ProjectionPreviewMode::Disabled;
+    ++meshRevision_;
+    ClearFrozenFrame();
+    error.clear();
     return true;
 }
 
@@ -585,6 +749,34 @@ bool Renderer::AddReferenceAsset(const Mesh& mesh, const TextureImage& texture, 
 
 void Renderer::ClearReferenceAssets() {
     referenceAssets_.clear();
+}
+
+bool Renderer::AddReferenceModel(const ImportedModel& model, std::string& error) {
+    if (!device_ || model.surfaces.empty()) {
+        error = "The reference model has no surfaces or the renderer is unavailable.";
+        return false;
+    }
+    std::vector<ReferenceGpuAsset> staged;
+    staged.reserve(model.surfaces.size());
+    for (const auto& surface : model.surfaces) {
+        Renderer geometry;
+        geometry.device_ = device_;
+        if (!geometry.SetMesh(surface.mesh, error)) return false;
+        ReferenceGpuAsset asset;
+        asset.vertexBuffer = std::move(geometry.vertexBuffer_);
+        asset.indexBuffer = std::move(geometry.visibleIndexBuffer_);
+        asset.indexCount = static_cast<std::uint32_t>(surface.mesh.Indices().size());
+        asset.appearance = surface.appearance;
+        if (!CreateMaterialSampler(asset.appearance, asset.sampler, error) ||
+            !UploadRgbaTexture(surface.baseColor, false, asset.texture, asset.textureSrv, nullptr, error)) {
+            return false;
+        }
+        staged.push_back(std::move(asset));
+    }
+    referenceAssets_.reserve(referenceAssets_.size() + staged.size());
+    for (auto& asset : staged) referenceAssets_.push_back(std::move(asset));
+    error.clear();
+    return true;
 }
 
 void Renderer::UpdateVisibleIndexBuffer() {
@@ -1017,11 +1209,11 @@ void Renderer::RenderViewportRegion(const std::uint32_t width, const std::uint32
 }
 
 void Renderer::DrawScene(const std::uint32_t width, const std::uint32_t height,
-                         const CameraState& camera, const Vec2& minimumUv,
-                         const Vec2& maximumUv) {
+                          const CameraState& camera, const Vec2& minimumUv,
+                          const Vec2& maximumUv) {
     D3D11_MAPPED_SUBRESOURCE mapped{};
+    ShaderConstants constants{};
     if (SUCCEEDED(context_->Map(constants_.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped))) {
-        ShaderConstants constants{};
         const float viewSpanX = std::max(maximumUv.x - minimumUv.x, 0.0001f);
         const float viewSpanY = std::max(maximumUv.y - minimumUv.y, 0.0001f);
         const float sourceAspect = static_cast<float>(width) / height * viewSpanY / viewSpanX;
@@ -1046,6 +1238,10 @@ void Renderer::DrawScene(const std::uint32_t width, const std::uint32_t height,
         constants.projectionRegion[3] = sourceCropHeight / viewSpanY;
         constants.projectionTransform[0] = projectionOffset_[0];
         constants.projectionTransform[1] = projectionOffset_[1];
+        std::copy(editableAppearance_.baseColorFactor.begin(), editableAppearance_.baseColorFactor.end(),
+                  constants.baseColorFactor);
+        constants.materialParameters[0] = static_cast<float>(editableAppearance_.alphaMode);
+        constants.materialParameters[1] = editableAppearance_.alphaCutoff;
         std::memcpy(mapped.pData, &constants, sizeof(constants));
         context_->Unmap(constants_.Get(), 0);
     }
@@ -1060,6 +1256,8 @@ void Renderer::DrawScene(const std::uint32_t width, const std::uint32_t height,
     context_->VSSetConstantBuffers(0, 1, constants_.GetAddressOf());
     context_->PSSetConstantBuffers(0, 1, constants_.GetAddressOf());
     context_->PSSetSamplers(0, 1, sampler_.GetAddressOf());
+    ID3D11SamplerState* editableSampler = editableSampler_ ? editableSampler_.Get() : sampler_.Get();
+    context_->PSSetSamplers(1, 1, &editableSampler);
     ID3D11ShaderResourceView* nullResources[4]{};
 
     ID3D11ShaderResourceView* baseColor = originalTexturePreview_ && originalSrv_
@@ -1067,6 +1265,7 @@ void Renderer::DrawScene(const std::uint32_t width, const std::uint32_t height,
         : (workingProjectionPreviewEnabled_ && workingProjectionPreviewSrv_
             ? workingProjectionPreviewSrv_.Get() : workingSrv_.Get());
     if (vertexBuffer_ && visibleIndexBuffer_ && baseColor && !visibleIndices_.empty()) {
+        context_->RSSetState(editableAppearance_.doubleSided ? rasterizer_.Get() : backCullRasterizer_.Get());
         context_->IASetVertexBuffers(0, 1, vertexBuffer_.GetAddressOf(), &stride, &offset);
         context_->IASetIndexBuffer(visibleIndexBuffer_.Get(), DXGI_FORMAT_R32_UINT, 0);
         context_->PSSetShader(viewportPs_.Get(), nullptr, 0);
@@ -1077,15 +1276,31 @@ void Renderer::DrawScene(const std::uint32_t width, const std::uint32_t height,
         context_->PSSetShaderResources(0, 4, nullResources);
     }
 
+    const auto drawContext = [&](const ReferenceGpuAsset& asset) {
+        std::copy(asset.appearance.baseColorFactor.begin(), asset.appearance.baseColorFactor.end(),
+                  constants.baseColorFactor);
+        constants.materialParameters[0] = static_cast<float>(asset.appearance.alphaMode);
+        constants.materialParameters[1] = asset.appearance.alphaCutoff;
+        if (FAILED(context_->Map(constants_.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped))) return;
+        std::memcpy(mapped.pData, &constants, sizeof(constants));
+        context_->Unmap(constants_.Get(), 0);
+        context_->RSSetState(asset.appearance.doubleSided ? rasterizer_.Get() : backCullRasterizer_.Get());
+        ID3D11SamplerState* materialSampler = asset.sampler ? asset.sampler.Get() : sampler_.Get();
+        context_->PSSetSamplers(1, 1, &materialSampler);
+        context_->IASetVertexBuffers(0, 1, asset.vertexBuffer.GetAddressOf(), &stride, &offset);
+        context_->IASetIndexBuffer(asset.indexBuffer.Get(), DXGI_FORMAT_R32_UINT, 0);
+        ID3D11ShaderResourceView* texture = asset.sharesWorkingTexture ? baseColor : asset.textureSrv.Get();
+        context_->PSSetShaderResources(0, 1, &texture);
+        context_->DrawIndexed(asset.indexCount, 0, 0);
+        context_->PSSetShaderResources(0, 1, nullResources);
+    };
+    if (!importedContextAssets_.empty()) {
+        context_->PSSetShader(referencePs_.Get(), nullptr, 0);
+        for (const auto& asset : importedContextAssets_) drawContext(asset);
+    }
     if (referenceAssetsVisible_) {
         context_->PSSetShader(referencePs_.Get(), nullptr, 0);
-        for (const auto& asset : referenceAssets_) {
-            context_->IASetVertexBuffers(0, 1, asset.vertexBuffer.GetAddressOf(), &stride, &offset);
-            context_->IASetIndexBuffer(asset.indexBuffer.Get(), DXGI_FORMAT_R32_UINT, 0);
-            context_->PSSetShaderResources(0, 1, asset.textureSrv.GetAddressOf());
-            context_->DrawIndexed(asset.indexCount, 0, 0);
-            context_->PSSetShaderResources(0, 1, nullResources);
-        }
+        for (const auto& asset : referenceAssets_) drawContext(asset);
     }
     context_->PSSetShaderResources(0, 4, nullResources);
 }
@@ -1181,6 +1396,7 @@ bool Renderer::CaptureFrame(const CameraState& camera, const std::uint32_t width
     frozenCropX_ = (frozenWidth_ - frozenCropSize_) / 2;
     frozenCropY_ = (frozenHeight_ - frozenCropSize_) / 2;
     frozenIndexCount_ = static_cast<std::uint32_t>(visibleIndices_.size());
+    frozenMeshRevision_ = meshRevision_;
     TextureImage fullCapture;
     if (!ReadTexture(frozenColor_.Get(), DXGI_FORMAT_R8G8B8A8_UNORM_SRGB, fullCapture, error)) {
         return false;
@@ -1198,6 +1414,7 @@ bool Renderer::CaptureFrame(const CameraState& camera, const std::uint32_t width
     frame.cropY = frozenCropY_;
     frame.cropSize = frozenCropSize_;
     frame.indexCount = frozenIndexCount_;
+    frame.meshRevision = frozenMeshRevision_;
     return !image.Empty();
 }
 
@@ -1215,6 +1432,7 @@ void Renderer::ActivateProjectionFrame(const ProjectionFrame& frame) {
     frozenCropY_ = frame.cropY;
     frozenCropSize_ = frame.cropSize;
     frozenIndexCount_ = frame.indexCount;
+    frozenMeshRevision_ = frame.meshRevision;
 }
 
 void Renderer::ClearFrozenFrame() {
@@ -1226,6 +1444,7 @@ void Renderer::ClearFrozenFrame() {
     frozenIndexBuffer_.Reset();
     frozenWidth_ = frozenHeight_ = frozenIndexCount_ = 0;
     frozenCropX_ = frozenCropY_ = frozenCropSize_ = 0;
+    frozenMeshRevision_ = 0;
 }
 
 bool Renderer::EnsureWorkingProjectionPreview(std::string& error) {
@@ -1290,13 +1509,17 @@ bool Renderer::RefreshWorkingProjectionPreview(const float maxAngleDegrees,
 
 bool Renderer::RenderProjectionToTarget(ID3D11RenderTargetView* target,
                                         const float maxAngleDegrees, std::string& error) {
+    if (frozenMeshRevision_ != meshRevision_) {
+        error = "The captured frame belongs to a different model. Capture the current model again.";
+        return false;
+    }
     if (!target || !projectionSrv_ || !maskSrv_ || !frozenDepthSrv_ || !frozenTriangleIdsSrv_ ||
         !frozenIndexBuffer_) {
         error = "Capture a view and provide a projection image and mask before baking.";
         return false;
     }
-    ID3D11ShaderResourceView* nullResources[4]{};
-    context_->PSSetShaderResources(0, 4, nullResources);
+    ID3D11ShaderResourceView* nullResources[5]{};
+    context_->PSSetShaderResources(0, 5, nullResources);
     context_->OMSetRenderTargets(1, &target, nullptr);
     const D3D11_VIEWPORT viewport{0, 0, static_cast<float>(textureWidth_), static_cast<float>(textureHeight_), 0, 1};
     context_->RSSetViewports(1, &viewport);
@@ -1323,6 +1546,10 @@ bool Renderer::RenderProjectionToTarget(ID3D11RenderTargetView* target,
     constants.projectionRegion[3] = static_cast<float>(frozenCropSize_) / frozenHeight_;
     constants.projectionTransform[0] = projectionOffset_[0];
     constants.projectionTransform[1] = projectionOffset_[1];
+    std::copy(editableAppearance_.baseColorFactor.begin(), editableAppearance_.baseColorFactor.end(),
+              constants.baseColorFactor);
+    constants.materialParameters[0] = static_cast<float>(editableAppearance_.alphaMode);
+    constants.materialParameters[1] = editableAppearance_.alphaCutoff;
     std::memcpy(mapped.pData, &constants, sizeof(constants));
     context_->Unmap(constants_.Get(), 0);
 
@@ -1337,14 +1564,16 @@ bool Renderer::RenderProjectionToTarget(ID3D11RenderTargetView* target,
     context_->PSSetShader(bakePs_.Get(), nullptr, 0);
     context_->PSSetConstantBuffers(0, 1, constants_.GetAddressOf());
     ID3D11ShaderResourceView* resources[]{projectionSrv_.Get(), frozenDepthSrv_.Get(), maskSrv_.Get(),
-                                         frozenTriangleIdsSrv_.Get()};
-    context_->PSSetShaderResources(0, 4, resources);
+                                         frozenTriangleIdsSrv_.Get(), originalSrv_.Get()};
+    context_->PSSetShaderResources(0, 5, resources);
     context_->PSSetSamplers(0, 1, sampler_.GetAddressOf());
+    ID3D11SamplerState* materialSampler = editableSampler_ ? editableSampler_.Get() : sampler_.Get();
+    context_->PSSetSamplers(1, 1, &materialSampler);
     const float blendFactor[4]{};
     context_->OMSetBlendState(bakeBlend_.Get(), blendFactor, 0xffffffffu);
     context_->DrawIndexed(frozenIndexCount_, 0, 0);
     context_->OMSetBlendState(nullptr, blendFactor, 0xffffffffu);
-    context_->PSSetShaderResources(0, 4, nullResources);
+    context_->PSSetShaderResources(0, 5, nullResources);
     context_->OMSetRenderTargets(0, nullptr, nullptr);
     context_->Flush();
     error.clear();

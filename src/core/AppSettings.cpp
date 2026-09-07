@@ -25,7 +25,8 @@ std::filesystem::path PathFromUtf8(const std::string& value) {
 } // namespace
 
 bool HasRecentPrimaryAssetPair(const CodexRequestSettings& settings) noexcept {
-    return !settings.recentObjPath.empty() && !settings.recentTexturePath.empty();
+    return !settings.recentObjPath.empty() &&
+        (!settings.recentTexturePath.empty() || settings.recentSurfaceIndex >= 0);
 }
 
 void AddImageGenPromptToHistory(CodexRequestSettings& settings,
@@ -125,11 +126,21 @@ bool LoadCodexRequestSettings(const std::filesystem::path& path,
             recent != document.end() && recent->is_object()) {
             const auto obj = recent->find("obj");
             const auto texture = recent->find("texture");
+            const auto surface = recent->find("surface");
+            if (surface != recent->end() && surface->is_number_integer()) {
+                const auto index = surface->get<std::int64_t>();
+                if (index >= 0 && index < 100'000) {
+                    settings.recentSurfaceIndex = index;
+                    if (const auto name = recent->find("surfaceName");
+                        name != recent->end() && name->is_string())
+                        settings.recentSurfaceName = name->get<std::string>();
+                }
+            }
             if (obj != recent->end() && obj->is_string() &&
                 texture != recent->end() && texture->is_string()) {
                 const std::string objPath = obj->get<std::string>();
                 const std::string texturePath = texture->get<std::string>();
-                if (!objPath.empty() && !texturePath.empty()) {
+                if (!objPath.empty() && (!texturePath.empty() || settings.recentSurfaceIndex >= 0)) {
                     settings.recentObjPath = PathFromUtf8(objPath);
                     settings.recentTexturePath = PathFromUtf8(texturePath);
                 }
@@ -194,6 +205,10 @@ bool SaveCodexRequestSettings(const std::filesystem::path& path,
                 {"obj", PathToUtf8(settings.recentObjPath)},
                 {"texture", PathToUtf8(settings.recentTexturePath)},
             };
+            if (settings.recentSurfaceIndex >= 0) {
+                document["recentPrimaryAssets"]["surface"] = settings.recentSurfaceIndex;
+                document["recentPrimaryAssets"]["surfaceName"] = settings.recentSurfaceName;
+            }
         }
         if (!settings.imageGenPromptHistory.empty()) {
             auto& promptHistory = document["imageGen"]["promptHistory"];

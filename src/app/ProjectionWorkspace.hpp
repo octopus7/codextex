@@ -33,6 +33,10 @@ struct ProjectionWorkspace {
     std::filesystem::path temporaryDirectory;
     std::filesystem::path projectionPath;
     std::filesystem::path metadataPath;
+    std::filesystem::path sourceModelPath;
+    std::filesystem::path sourceTexturePath;
+    std::string sourceMaterialName;
+    std::string sourceTextureKey;
     std::string prompt;
     std::string status = "Waiting for projection image.";
     std::string model;

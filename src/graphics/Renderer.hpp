@@ -2,6 +2,7 @@
 
 #include "core/Mask.hpp"
 #include "core/Mesh.hpp"
+#include "core/ModelImport.hpp"
 #include "core/TextureImage.hpp"
 
 #include <Windows.h>
@@ -52,6 +53,7 @@ public:
         std::uint32_t cropY{};
         std::uint32_t cropSize{};
         std::uint32_t indexCount{};
+        std::uint64_t meshRevision{};
 
         [[nodiscard]] bool Valid() const noexcept {
             return depthSrv != nullptr && triangleIdsSrv != nullptr && indexBuffer != nullptr &&
@@ -66,12 +68,15 @@ public:
     void Present();
 
     bool SetMesh(const Mesh& mesh, std::string& error);
+    bool SetImportedModel(const ImportedModel& model, std::size_t selectedSurface,
+                          const TextureImage& selectedTexture, std::string& error);
     bool SetSourceAndWorkingTexture(const TextureImage& image, std::string& error);
     bool SetWorkingTexture(const TextureImage& image, std::string& error);
     bool SetProjectionImage(const TextureImage& image, std::string& error);
     bool SetSessionPreviewImage(const TextureImage& image, std::string& error);
     void ClearSessionPreviewImage();
     bool AddReferenceAsset(const Mesh& mesh, const TextureImage& texture, std::string& error);
+    bool AddReferenceModel(const ImportedModel& model, std::string& error);
     void ClearReferenceAssets();
     void SetReferenceAssetsVisible(bool visible) noexcept { referenceAssetsVisible_ = visible; }
     [[nodiscard]] bool ReferenceAssetsVisible() const noexcept { return referenceAssetsVisible_; }
@@ -142,6 +147,9 @@ private:
                            Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>& srv,
                            Microsoft::WRL::ComPtr<ID3D11RenderTargetView>* rtv,
                            std::string& error);
+    bool CreateMaterialSampler(const MaterialAppearance& appearance,
+                               Microsoft::WRL::ComPtr<ID3D11SamplerState>& sampler,
+                               std::string& error);
     bool ReadTexture(ID3D11Texture2D* texture, DXGI_FORMAT format, TextureImage& image,
                      std::string& error) const;
     void DrawScene(std::uint32_t width, std::uint32_t height, const CameraState& camera,
@@ -177,6 +185,7 @@ private:
     Microsoft::WRL::ComPtr<ID3D11Buffer> maskConstants_;
     Microsoft::WRL::ComPtr<ID3D11SamplerState> sampler_;
     Microsoft::WRL::ComPtr<ID3D11RasterizerState> rasterizer_;
+    Microsoft::WRL::ComPtr<ID3D11RasterizerState> backCullRasterizer_;
     Microsoft::WRL::ComPtr<ID3D11BlendState> bakeBlend_;
 
     Microsoft::WRL::ComPtr<ID3D11Buffer> vertexBuffer_;
@@ -191,8 +200,14 @@ private:
         Microsoft::WRL::ComPtr<ID3D11Texture2D> texture;
         Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> textureSrv;
         std::uint32_t indexCount{};
+        MaterialAppearance appearance;
+        Microsoft::WRL::ComPtr<ID3D11SamplerState> sampler;
+        bool sharesWorkingTexture{};
     };
     std::vector<ReferenceGpuAsset> referenceAssets_;
+    std::vector<ReferenceGpuAsset> importedContextAssets_;
+    MaterialAppearance editableAppearance_;
+    Microsoft::WRL::ComPtr<ID3D11SamplerState> editableSampler_;
 
     Microsoft::WRL::ComPtr<ID3D11Texture2D> colorTexture_;
     Microsoft::WRL::ComPtr<ID3D11RenderTargetView> colorRtv_;
@@ -240,6 +255,8 @@ private:
     std::uint32_t frozenCropY_{};
     std::uint32_t frozenCropSize_{};
     std::uint32_t frozenIndexCount_{};
+    std::uint64_t meshRevision_{};
+    std::uint64_t frozenMeshRevision_{};
 
     std::vector<Vertex> vertices_;
     std::vector<std::uint32_t> allIndices_;

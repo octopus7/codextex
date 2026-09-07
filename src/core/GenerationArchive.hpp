@@ -23,6 +23,8 @@ struct GenerationArchiveMetadata {
     std::filesystem::path objPath;
     std::filesystem::path texturePath;
     Vec3 cameraTarget{};
+    std::string materialName;
+    std::string textureKey;
     float cameraYaw{};
     float cameraPitch{};
     float cameraDistance{};

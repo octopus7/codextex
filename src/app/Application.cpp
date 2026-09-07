@@ -553,6 +553,7 @@ bool Application::SelectUiLanguage(const UiLanguage language) {
 }
 
 void Application::DrawUi() {
+    PollModelImport();
     const KeyboardShortcutContext shortcutContext{
         !activeProjectionId_.has_value(), textureLoaded_,
         textureHistory_.CanUndo(), textureHistory_.CanRedo()};
@@ -594,10 +595,10 @@ void Application::DrawMenuBar() {
     if (!ImGui::BeginMainMenuBar()) return;
     if (ImGui::BeginMenu(Tr("File"))) {
         const bool primaryAssetLoadingEnabled = !activeProjectionId_.has_value();
-        if (ImGui::MenuItem(Tr("Open OBJ..."), "Ctrl+O", false, primaryAssetLoadingEnabled)) OpenObj();
+        if (ImGui::MenuItem(Tr("Open Model..."), "Ctrl+O", false, primaryAssetLoadingEnabled)) OpenObj();
         if (ImGui::MenuItem(Tr("Open Texture PNG..."), "Ctrl+T", false,
                             primaryAssetLoadingEnabled)) OpenTexture();
-        if (ImGui::MenuItem(Tr("Add Reference OBJ + PNG..."))) AddReferenceAsset();
+        if (ImGui::MenuItem(Tr("Add Reference Model..."))) AddReferenceAsset();
         ImGui::Separator();
         if (ImGui::MenuItem(Tr("Save Texture"), "Ctrl+S", false, textureLoaded_)) SaveTexture(false);
         if (ImGui::MenuItem(Tr("Save Texture As..."), nullptr, false, textureLoaded_)) SaveTexture(true);
@@ -1001,7 +1002,7 @@ void Application::DrawTools() {
     ImGui::Begin(windowLabel.c_str());
     ProjectionTab* tab = ActiveProjectionTab();
     if (tab == nullptr) {
-        if (ImGui::Button(Tr("Open OBJ"))) OpenObj();
+        if (ImGui::Button(Tr("Open Model"))) OpenObj();
         ImGui::SameLine();
         if (ImGui::Button(Tr("Open Texture PNG"))) OpenTexture();
         if (RecentPrimaryAssetsAvailable()) {
@@ -1009,11 +1010,11 @@ void Application::DrawTools() {
             if (ImGui::Button(Tr("Load last files"))) OpenRecentPrimaryAssets();
         }
         if (meshLoaded_) {
-            ImGui::Text("OBJ: %s", Narrow(mesh_.SourcePath().filename()).c_str());
+            ImGui::Text(Tr("Model: %s"), Narrow(mesh_.SourcePath().filename()).c_str());
             ImGui::Text(Tr("Triangles: %zu"), mesh_.TriangleCount());
         }
         if (textureLoaded_) {
-            ImGui::Text(Tr("Texture: %s (%ux%u)"), Narrow(texturePath_.filename()).c_str(),
+            ImGui::Text(Tr("Texture: %s (%ux%u)"), texturePath_.empty() ? Tr("Imported Base Color") : Narrow(texturePath_.filename()).c_str(),
                         sourceTexture_.Width(), sourceTexture_.Height());
         }
     } else {
@@ -1022,18 +1023,22 @@ void Application::DrawTools() {
         ImGui::TextColored(ImVec4(0.45f, 0.85f, 1, 1),
                            Tr("Read-only snapshot for Projection %llu"),
                            static_cast<unsigned long long>(tab->id));
-        ImGui::Text("OBJ: %s", Narrow(mesh_.SourcePath().filename()).c_str());
+        ImGui::Text(Tr("Model: %s"), Narrow(tab->sourceModelPath.filename()).c_str());
         ImGui::Text(Tr("Triangles: %zu"), mesh_.TriangleCount());
-        ImGui::Text(Tr("Texture: %s (%ux%u)"), Narrow(texturePath_.filename()).c_str(),
+        ImGui::Text(Tr("Texture: %s (%ux%u)"), tab->sourceTexturePath.empty() ? Tr("Imported Base Color") : Narrow(tab->sourceTexturePath.filename()).c_str(),
                     sourceTexture_.Width(), sourceTexture_.Height());
         ImGui::Text(Tr("Offline capture: %u x %u"), tab->frame.width, tab->frame.height);
         ImGui::Text("Codex: %s / %s", tab->model.c_str(), tab->reasoningEffort.c_str());
         const auto hiddenCount = std::count(tab->hiddenFaces.begin(), tab->hiddenFaces.end(),
                                             std::uint8_t{1});
         ImGui::Text(Tr("Frozen hidden faces: %zu"), hiddenCount);
-        ImGui::TextDisabled(Tr("OBJ and Base Color loading is available only in Main Viewport."));
+        ImGui::TextDisabled(Tr("Model and Base Color loading is available only in Main Viewport."));
         ImGui::EndChild();
     }
+    DrawModelImport();
+    tab = ActiveProjectionTab();
+    if (meshLoaded_ && !mesh_.UvOverlapCheckComplete())
+        ImGui::TextWrapped("%s", Tr("UV overlap analysis is incomplete for this model."));
     if (meshLoaded_ && mesh_.UvOverlapCount() > 0) {
         ImGui::AlignTextToFramePadding();
         ImGui::TextColored(ImVec4(1, 0.65f, 0.2f, 1), Tr("Warning: %zu overlapping UV pair(s)"),
@@ -1046,7 +1051,7 @@ void Application::DrawTools() {
     SectionHeaderWithHelp(
         "ImageGenReferenceSets", Tr("ImageGen reference sets"),
         Tr("Reference sets are viewport/ImageGen context only. Toggle them off manually while projection painting if desired."));
-    if (ImGui::Button(Tr("Add reference OBJ + PNG"))) AddReferenceAsset();
+    if (ImGui::Button(Tr("Add reference model"))) AddReferenceAsset();
     ImGui::SameLine();
     ImGui::BeginDisabled(referenceAssets_.empty());
     bool& showReferences = tab == nullptr ? referenceAssetsVisible_ : tab->referenceAssetsVisible;
@@ -1597,26 +1602,30 @@ void Application::DeleteAllTempFiles() {
 }
 
 bool Application::OpenObj() {
-    const auto path = OpenFileDialog("Open UV-mapped OBJ", L"Wavefront OBJ (*.obj)\0*.obj\0\0");
+    if (modelImportFuture_.valid() || pendingModel_) return false;
+    const auto path = OpenFileDialog("Open model", L"3D models (*.obj;*.fbx;*.glb)\0*.obj;*.fbx;*.glb\0\0");
     if (path.empty()) return false;
+    auto extension = path.extension().wstring();
+    std::transform(extension.begin(), extension.end(), extension.begin(),
+                   [](wchar_t c) { return static_cast<wchar_t>(std::towlower(c)); });
+    if (extension != L".obj") return BeginModelImport(path);
     Mesh mesh;
     std::string error;
     if (!mesh.LoadObj(path, error)) {
         SetStatus(error, true);
         return false;
     }
+    if (!renderer_.SetMesh(mesh, error)) { SetStatus(error, true); return false; }
     ClearProjectionTabs();
+    importedModel_.reset();
     mesh_ = std::move(mesh);
     meshLoaded_ = true;
     renderer_.SetLocalSideFilter(LocalSideFilter::Both);
     hiddenFaces_.assign(mesh_.TriangleCount(), 0);
     selectedFaces_.assign(mesh_.TriangleCount(), 0);
+    renderer_.SetHiddenFaces(hiddenFaces_);
+    renderer_.SetSelectedFaces(selectedFaces_);
     hiddenHistory_.clear();
-    if (!renderer_.SetMesh(mesh_, error)) {
-        meshLoaded_ = false;
-        SetStatus(error, true);
-        return false;
-    }
     camera_.yaw = 0.0f;
     camera_.pitch = 0.15f;
     camera_.fovDegrees = 45.0f;
@@ -1644,6 +1653,16 @@ bool Application::OpenTexture() {
     textureLoaded_ = true;
     textureHistory_.Clear();
     ++textureRevision_;
+    if (importedModel_) {
+        auto& surface = importedModel_->surfaces[selectedModelSurface_];
+        const auto key = surface.textureKey;
+        for (auto& item : importedModel_->surfaces) {
+            if (&item == &surface || (!key.empty() && item.textureKey == key)) {
+                item.baseColor = sourceTexture_;
+                item.externalTexturePath = path;
+            }
+        }
+    }
     SetStatus("Texture PNG loaded.");
     RememberRecentPrimaryAssets();
     return true;
@@ -1655,8 +1674,8 @@ bool Application::RecentPrimaryAssetsAvailable() const {
     std::error_code textureError;
     return std::filesystem::is_regular_file(codexSettings_.recentObjPath, objError) &&
            !objError &&
-           std::filesystem::is_regular_file(codexSettings_.recentTexturePath, textureError) &&
-           !textureError;
+           ((codexSettings_.recentSurfaceIndex >= 0 && codexSettings_.recentTexturePath.empty()) ||
+            (std::filesystem::is_regular_file(codexSettings_.recentTexturePath, textureError) && !textureError));
 }
 
 void Application::RememberRecentPrimaryAssets() {
@@ -1666,6 +1685,8 @@ void Application::RememberRecentPrimaryAssets() {
     settingsToSave.language = codexSettings_.language;
     settingsToSave.recentObjPath = mesh_.SourcePath();
     settingsToSave.recentTexturePath = texturePath_;
+    settingsToSave.recentSurfaceIndex = importedModel_ ? static_cast<std::int64_t>(selectedModelSurface_) : -1;
+    settingsToSave.recentSurfaceName = importedModel_ ? importedModel_->surfaces[selectedModelSurface_].name : "";
     std::string error;
     if (!SaveCodexRequestSettings(settingsPath_, settingsToSave, error)) {
         settingsMessage_ = error;
@@ -1676,15 +1697,20 @@ void Application::RememberRecentPrimaryAssets() {
     persistedSettings_ = settingsToSave;
     codexSettings_.recentObjPath = settingsToSave.recentObjPath;
     codexSettings_.recentTexturePath = settingsToSave.recentTexturePath;
+    codexSettings_.recentSurfaceIndex = settingsToSave.recentSurfaceIndex;
+    codexSettings_.recentSurfaceName = settingsToSave.recentSurfaceName;
     settingsLoadedFromDisk_ = true;
     settingsMessage_.clear();
 }
 
 bool Application::OpenRecentPrimaryAssets() {
+    if (modelImportFuture_.valid() || pendingModel_) return false;
     if (!RecentPrimaryAssetsAvailable()) {
-        SetStatus("The last OBJ and texture files are no longer available.", true);
+        SetStatus("The last model or texture file is no longer available.", true);
         return false;
     }
+    if (codexSettings_.recentSurfaceIndex >= 0)
+        return BeginModelImport(codexSettings_.recentObjPath, false, true);
     if (textureHistory_.IsDirty() && !CanClose()) return false;
 
     const std::filesystem::path objPath = codexSettings_.recentObjPath;
@@ -1701,13 +1727,18 @@ bool Application::OpenRecentPrimaryAssets() {
         return false;
     }
 
-    ClearProjectionTabs();
-    if (!renderer_.SetMesh(mesh, error) ||
-        !renderer_.SetSourceAndWorkingTexture(texture, error)) {
+    ImportedModel recentModel;
+    ModelSurface recentSurface;
+    recentSurface.mesh = mesh;
+    recentSurface.baseColor = texture;
+    recentSurface.appearance.wrapU = recentSurface.appearance.wrapV = TextureWrap::Clamp;
+    recentModel.surfaces.push_back(std::move(recentSurface));
+    if (!renderer_.SetImportedModel(recentModel, 0, texture, error)) {
         SetStatus(error, true);
         return false;
     }
-
+    ClearProjectionTabs();
+    importedModel_.reset();
     mesh_ = std::move(mesh);
     sourceTexture_ = std::move(texture);
     texturePath_ = texturePath;
@@ -1723,8 +1754,10 @@ bool Application::OpenRecentPrimaryAssets() {
     camera_.pitch = 0.15f;
     camera_.fovDegrees = 45.0f;
     ++textureRevision_;
+    renderer_.SetHiddenFaces(hiddenFaces_);
+    renderer_.SetSelectedFaces(selectedFaces_);
     FitCamera();
-    SetStatus("Last OBJ and texture loaded.");
+    SetStatus("Last model and texture loaded.");
     return true;
 }
 
@@ -1760,9 +1793,14 @@ bool Application::OpenProjection(ProjectionTab& tab) {
 }
 
 bool Application::AddReferenceAsset() {
-    const auto objPath = OpenFileDialog("Open inference reference OBJ",
-                                        L"Wavefront OBJ (*.obj)\0*.obj\0\0");
+    if (modelImportFuture_.valid() || pendingModel_) return false;
+    const auto objPath = OpenFileDialog("Open reference model",
+                                        L"3D models (*.obj;*.fbx;*.glb)\0*.obj;*.fbx;*.glb\0\0");
     if (objPath.empty()) return false;
+    auto extension = objPath.extension().wstring();
+    std::transform(extension.begin(), extension.end(), extension.begin(),
+                   [](wchar_t c) { return static_cast<wchar_t>(std::towlower(c)); });
+    if (extension != L".obj") return BeginModelImport(objPath, true);
     const auto texturePath = OpenFileDialog("Open texture for the reference OBJ",
                                             L"PNG image (*.png)\0*.png\0\0");
     if (texturePath.empty()) return false;
@@ -1782,7 +1820,7 @@ bool Application::AddReferenceAsset() {
         SetStatus(error, true);
         return false;
     }
-    referenceAssets_.push_back({std::move(mesh), std::move(texture), objPath, texturePath});
+    referenceAssets_.push_back({std::move(mesh), std::move(texture), objPath, texturePath, {}});
     renderer_.SetReferenceAssetsVisible(referenceAssetsVisible_);
     SetStatus("Inference reference OBJ + PNG added. It will never be baked or saved.");
     return true;
@@ -1798,7 +1836,8 @@ bool Application::RebuildReferenceAssets() {
     renderer_.ClearReferenceAssets();
     std::string error;
     for (const auto& asset : referenceAssets_) {
-        if (!renderer_.AddReferenceAsset(asset.mesh, asset.texture, error)) {
+        if (!(asset.model ? renderer_.AddReferenceModel(*asset.model, error) :
+              renderer_.AddReferenceAsset(asset.mesh, asset.texture, error))) {
             SetStatus("Could not rebuild reference viewport assets: " + error, true);
             return false;
         }
@@ -1814,6 +1853,13 @@ bool Application::SaveTexture(const bool choosePath) {
         path = SaveFileDialog("Save Base Color PNG", L"PNG image (*.png)\0*.png\0\0", path);
         if (path.empty()) return false;
     }
+    auto extension = path.extension().wstring();
+    std::transform(extension.begin(), extension.end(), extension.begin(),
+                   [](wchar_t c) { return static_cast<wchar_t>(std::towlower(c)); });
+    if (extension != L".png") {
+        SetStatus("Choose a .png filename for the edited texture.", true);
+        return false;
+    }
     TextureImage current;
     std::string error;
     if (!renderer_.ReadWorkingTexture(current, error) || !current.SavePng(path, error)) {
@@ -1822,7 +1868,18 @@ bool Application::SaveTexture(const bool choosePath) {
     }
     texturePath_ = path;
     textureHistory_.MarkSaved();
-    SetStatus("Texture PNG saved. No OBJ or project file was written.");
+    if (importedModel_) {
+        auto& surface = importedModel_->surfaces[selectedModelSurface_];
+        const auto key = surface.textureKey;
+        for (auto& item : importedModel_->surfaces) {
+            if (&item == &surface || (!key.empty() && item.textureKey == key)) {
+                item.baseColor = current;
+                item.externalTexturePath = path;
+            }
+        }
+    }
+    RememberRecentPrimaryAssets();
+    SetStatus("Texture PNG saved. The source model is unchanged.");
     return true;
 }
 
@@ -1846,6 +1903,12 @@ bool Application::CreateProjectionTab(const bool generate) {
     tab.captureShadingEnabled = shadingEnabled_;
     tab.captureBackgroundColor = viewportBackgroundColor_;
     tab.prompt = generationPrompt_.data();
+    tab.sourceModelPath = mesh_.SourcePath();
+    tab.sourceTexturePath = texturePath_;
+    if (importedModel_) {
+        tab.sourceMaterialName = importedModel_->surfaces[selectedModelSurface_].name;
+        tab.sourceTextureKey = importedModel_->surfaces[selectedModelSurface_].textureKey;
+    }
     tab.referencePaths.reserve(referenceAssets_.size());
     for (const auto& reference : referenceAssets_) {
         tab.referencePaths.emplace_back(reference.objPath, reference.texturePath);
@@ -2301,8 +2364,10 @@ void Application::HandleCodexEvents() {
             metadata.prompt = tab->prompt;
             metadata.model = tab->model;
             metadata.reasoningEffort = tab->reasoningEffort;
-            metadata.objPath = mesh_.SourcePath();
-            metadata.texturePath = texturePath_;
+            metadata.objPath = tab->sourceModelPath;
+            metadata.texturePath = tab->sourceTexturePath;
+            metadata.materialName = tab->sourceMaterialName;
+            metadata.textureKey = tab->sourceTextureKey;
             metadata.cameraTarget = tab->camera.target;
             metadata.cameraYaw = tab->camera.yaw;
             metadata.cameraPitch = tab->camera.pitch;

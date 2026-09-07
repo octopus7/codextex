@@ -33,6 +33,32 @@ TEST_CASE("Missing app settings use Sol medium without creating a file") {
     CHECK_FALSE(std::filesystem::exists(path));
 }
 
+TEST_CASE("Recent imported materials restore embedded images without a PNG path") {
+    const auto path = SettingsPath(L"settings-embedded-model");
+    std::filesystem::create_directories(path.parent_path());
+    codextex::CodexRequestSettings written;
+    written.recentObjPath = LR"(D:\素材\character.glb)";
+    written.recentSurfaceIndex = 2;
+    written.recentSurfaceName = "옷 / Clothing";
+    std::string error;
+    REQUIRE(codextex::HasRecentPrimaryAssetPair(written));
+    REQUIRE(codextex::SaveCodexRequestSettings(path, written, error));
+    codextex::CodexRequestSettings restored;
+    bool loaded = false;
+    REQUIRE(codextex::LoadCodexRequestSettings(path, restored, loaded, error));
+    REQUIRE(loaded);
+    CHECK(restored.recentObjPath == written.recentObjPath);
+    CHECK(restored.recentTexturePath.empty());
+    CHECK(restored.recentSurfaceIndex == 2);
+    CHECK(restored.recentSurfaceName == written.recentSurfaceName);
+    CHECK(codextex::HasRecentPrimaryAssetPair(restored));
+    written.recentTexturePath = LR"(D:\素材\edited.png)";
+    REQUIRE(codextex::SaveCodexRequestSettings(path, written, error));
+    REQUIRE(codextex::LoadCodexRequestSettings(path, restored, loaded, error));
+    CHECK(restored.recentTexturePath == written.recentTexturePath);
+    CHECK(restored.recentSurfaceIndex == 2);
+}
+
 TEST_CASE("App settings persist beside the requested binary path") {
     const auto path = SettingsPath(L"settings-roundtrip");
     std::filesystem::create_directories(path.parent_path());

@@ -1,10 +1,12 @@
 #include "core/Mesh.hpp"
+#include "core/ModelImport.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/catch_approx.hpp>
 
 #include <filesystem>
 #include <fstream>
+#include <limits>
 
 namespace {
 
@@ -18,6 +20,42 @@ std::filesystem::path WriteObj(const std::string& name, const std::string& conte
 }
 
 } // namespace
+
+TEST_CASE("Imported triangles receive stable IDs and invalid replacement preserves the mesh") {
+    std::vector<codextex::Vertex> vertices{
+        {{0, 0, 0}, {}, {0, 0}, 999}, {{1, 0, 0}, {}, {1, 0}, 999},
+        {{0, 1, 0}, {}, {0, 1}, 999}, {{0, 0, 1}, {}, {0, 0}, 999},
+        {{1, 0, 1}, {}, {1, 0}, 999}, {{0, 1, 1}, {}, {0, 1}, 999}};
+    codextex::Mesh mesh;
+    std::string error;
+    REQUIRE(mesh.AssignTriangles("original.glb", vertices, error, true));
+    REQUIRE(mesh.TriangleCount() == 2);
+    for (std::size_t i = 0; i < vertices.size(); ++i) {
+        CHECK(mesh.Indices()[i] == i);
+        CHECK(mesh.Vertices()[i].triangleId == i / 3);
+        CHECK(mesh.Vertices()[i].normal.z == Catch::Approx(1.0f));
+    }
+    vertices[0].position.x = std::numeric_limits<float>::quiet_NaN();
+    CHECK_FALSE(mesh.AssignTriangles("invalid.fbx", vertices, error));
+    CHECK(mesh.SourcePath() == "original.glb");
+    CHECK(mesh.TriangleCount() == 2);
+}
+
+TEST_CASE("Imported material edit eligibility preserves authored UV limitations") {
+    std::vector<codextex::Vertex> vertices{
+        {{0, 0, 0}, {}, {0, 0}}, {{1, 0, 0}, {}, {2, 0}}, {{0, 1, 0}, {}, {0, 1}}};
+    codextex::Mesh mesh;
+    std::string error;
+    REQUIRE(mesh.AssignTriangles("tiled.glb", vertices, error));
+    codextex::MaterialAppearance appearance;
+    CHECK(codextex::ValidateEditableSurface(mesh, true, appearance).find("0..1") != std::string::npos);
+    CHECK(codextex::ValidateEditableSurface(mesh, false, appearance).find("no UV") != std::string::npos);
+    vertices[1].uv.x = 1;
+    REQUIRE(mesh.AssignTriangles("atlas.glb", vertices, error));
+    CHECK(codextex::ValidateEditableSurface(mesh, true, appearance).empty());
+    appearance.alphaMode = codextex::MaterialAlphaMode::Blend;
+    CHECK_FALSE(codextex::ValidateEditableSurface(mesh, true, appearance).empty());
+}
 
 TEST_CASE("OBJ loader accepts a single UV atlas and triangulates faces") {
     const auto path = WriteObj("quad.obj", R"OBJ(

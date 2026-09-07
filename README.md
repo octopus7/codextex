@@ -1,12 +1,14 @@
 # CodexTex
 
-CodexTex is a Windows-native OBJ texture projection tool. It loads an OBJ with
-existing UVs and a PNG Base Color texture independently, captures the current
-3D view, obtains an edited projection image from Codex ImageGen (or a local
-PNG), masks the desired region, and bakes only the texture.
+CodexTex is a Windows-native texture projection tool for OBJ, FBX, and GLB
+models. OBJ uses a separately loaded PNG; FBX and GLB import static material
+surfaces and their Base Color images. Choose one material to edit, capture the
+current 3D view, obtain an edited projection image from Codex ImageGen (or a
+local PNG), mask the desired region, and bake into the working texture.
 
-The OBJ, UVs, hidden-face state, camera, masks, and undo history are session
-state. Only the PNG texture is ever saved.
+Geometry, UVs, material selection, hidden faces, camera, masks, and undo history
+are session state. The edited result is saved as PNG. Source model containers
+and their embedded images are never rewritten.
 
 ## Requirements
 
@@ -43,9 +45,14 @@ if it is not already present.
 
 ## Workflow
 
-1. Open an OBJ and a PNG independently.
-2. Optionally add any number of inference reference OBJ + PNG pairs. They use
-   their authored world coordinates and appear only as viewport/ImageGen context.
+1. Open a model. For OBJ, load its PNG independently. For FBX or GLB, choose the
+   Base Color material to edit when the model has several surfaces. A single
+   editable surface opens directly. Use `Choose Base Color PNG` to relink a
+   missing authored image; UV and material restrictions still apply.
+2. Optionally add inference references: OBJ + PNG pairs or FBX/GLB models with
+   their material images. They appear only as viewport/ImageGen context. Other
+   materials in the editable model also remain visible as context, independently
+   of the inference-reference visibility switch.
 3. Orbit to the desired view. In Face mode, click or lasso occluding triangles
    and hide them to expose recessed areas.
 4. Enter a prompt and choose `Generate from current view`. CodexTex immediately
@@ -60,6 +67,22 @@ if it is not already present.
 7. All projection tabs bake into the same live working texture and see changes
    made by other tabs. Undo/redo is shared. Repeat as needed, then save the PNG.
 
+`Editing material` changes the active material from the main viewport. Before
+replacing a dirty working texture through model, material, or image loading,
+CodexTex offers the existing save/discard/cancel confirmation. A successful model
+or material change resets projection tabs, face selection, and hidden faces.
+Replacing the working texture also resets texture undo history; opening only an
+OBJ preserves the independently loaded texture and its history. Failed imports or GPU resource preparation preserve the
+current session. Materials sharing the same image also display its edited texels;
+they do not receive independent texture copies for painting.
+
+FBX/GLB parsing runs in the background. `Cancel import` discards the pending
+result; the application waits for the resource-limited import to finish cleanup
+before starting another import. Cancellation does not interrupt the parser
+immediately. A recent input records the model path, material index and name, and
+an optional external PNG path. Older OBJ/PNG recent-input settings remain valid.
+If the recorded material has changed, the material picker opens again.
+
 Texture history retains at most eight snapshots across undo and redo, within a
 256 MiB RGBA budget. Failed GPU updates leave history and the save point intact.
 Returning to the saved state clears the unsaved marker.
@@ -67,7 +90,7 @@ Returning to the saved state clears the unsaved marker.
 The viewport starts in an unlit Base Color mode so PNG texels are displayed
 without lighting multiplication. `Neutral shading` is an optional display and
 capture aid. The first-run docking layout reserves the main central area for the
-3D viewport; `Fit primary view (F)` recenters and tightly frames the editable OBJ.
+3D viewport; `Fit primary view (F)` recenters and tightly frames the editable surface.
 Viewport backgrounds use a clearly distinguishable solid blue-gray instead of
 near-black. `Background color` in `Viewport display` changes the solid color for
 every viewport and for subsequent ImageGen captures without affecting mesh or
@@ -107,18 +130,21 @@ spacing, and the initial window size are rasterized at the monitor's native DPI,
 and are rebuilt after a `WM_DPICHANGED` monitor transition instead of relying on
 Windows bitmap scaling.
 
-Projection tabs show the fixed OBJ, Base Color, triangle count, 1024x1024 offline capture size,
-and hidden-face snapshot in a read-only source panel. Primary OBJ/texture loading
-is available only from `Main Viewport`; inference reference OBJ + PNG pairs can
-still be added, removed, or toggled from either context.
+Projection tabs show the fixed model, Base Color, triangle count, 1024x1024 offline
+capture size, and hidden-face snapshot in a read-only source panel. Primary model,
+material, and texture loading is available only from `Main Viewport`; inference
+references can still be added, removed, or toggled from either context.
 
-Ctrl+O opens an OBJ, Ctrl+T opens a texture, Ctrl+S saves the working texture,
+Ctrl+O opens a model, Ctrl+T opens a PNG texture, Ctrl+S saves the working texture,
 and Ctrl+Z/Y undo and redo texture changes. Shortcuts follow the menu's enabled
 state; opening primary assets is limited to the main viewport. Text fields keep
 their own Ctrl+Z/Y behavior, and holding a shortcut does not repeat the action.
 
 For overlapping or mirrored UV layouts, `Mirrored UV side` can exclude either
-the OBJ's local `-X` or `+X` side from projection preview and baking. This stops
+side of the active mesh's X midpoint from projection preview and baking. For
+FBX/GLB, this is the selected material's merged bounds center in the imported
+right-handed Y-up meter coordinates; it does not recover individual source-node
+local axes. OBJ uses its authored, unitless coordinates. This stops
 the opposite projection from overwriting the same UV region. Because both model
 sides still sample shared texels, the resulting texture necessarily appears on
 both sides; separate left/right detail requires non-overlapping UV islands.
@@ -162,8 +188,11 @@ surfaces and inference references correctly block projection into occluded UVs.
 
 ## Tests
 
-The test target covers OBJ validation and UV-overlap diagnostics, PNG RGBA
-round trips, manual mask operations and prompt construction, an in-process WARP render/bake golden path,
+The test target covers OBJ validation and UV-overlap diagnostics, FBX/GLB fixture
+imports, hierarchy and mirrored transforms, material groups, UV channels and
+texture transforms, external/embedded images, invalid resources, and import
+rollback. Image tests cover PNG RGBA round trips and WIC use across COM lifetimes.
+Tests also cover manual mask operations and prompt construction, an in-process WARP render/bake golden path,
 and a test-only JSONL App Server executable for signed-out, missing-skill,
 generation, concurrent per-tab job routing, and interrupt behavior. A real ImageGen E2E run
 still requires a locally authenticated ChatGPT Codex installation.
@@ -174,10 +203,37 @@ history, real ImGui shortcut routing, and asynchronous request/cleanup races.
 The Windows workflow builds the Release GUI and runs the full suite on pushes
 and pull requests, with cached vcpkg binaries and archived test diagnostics.
 
-## Scope
+## Model support and limits
 
-Version 1 supports one editable OBJ, one UV set, and one editable PNG Base Color texture,
-plus read-only inference reference pairs. It does
-not write OBJ/MTL/project files, unwrap UVs, or manage PBR texture sets. Inference
-reference pairs are read-only session assets: they cannot be selected, hidden by
-face tools, projected into, baked, or saved by CodexTex.
+The FBX and GLB paths support static Base Color editing, not every feature in
+either format. One material's Base Color image is editable at a time; the other
+material surfaces and independent inference references provide visible context.
+References cannot be selected, hidden by face tools, projected into, baked, or
+saved by CodexTex. The application does not unwrap or repack UVs, edit geometry,
+manage PBR auxiliary maps, or write OBJ, MTL, FBX, GLB, or project files. OBJ keeps
+its existing separate-PNG workflow and does not use MTL texture bindings.
+
+| Area | Current behavior |
+| --- | --- |
+| Geometry | FBX polygons and GLB triangles, strips, and fans become static triangles grouped by material. Node hierarchy, geometry transforms, nonuniform scales, and mirrored winding are applied; normals use the inverse transpose. Missing normals are generated. |
+| Coordinates | FBX and GLB use right-handed Y-up meters after import. OBJ remains unitless in its authored coordinates. Primary and reference models use the same format-specific conversion, with no automatic alignment or relative scale correction. |
+| Images | Native Base Color images can be embedded or external PNG/JPEG. External references resolve relative to the model. A missing or undecodable authored image displays white and requires a replacement PNG before editing. An untextured material starts with a white working image. |
+| UVs | The Base Color binding selects its UV set. Texture transforms are applied consistently to display and bake. OBJ/FBX bottom-left UVs are converted once; GLB top-left UVs are preserved. UVs are never automatically repaired or packed. |
+| Materials | Base Color factors, supported wrap modes, alpha cutouts, and sidedness are kept separate from image pixels. GLB `MASK` and its cutoff are used by color, depth, face-ID, capture, and bake paths. FBX binary image alpha is treated as a cutout; fractional alpha is translucent. |
+| Editing restrictions | Translucent/`BLEND` surfaces, missing UVs, UVs outside a single 0..1 atlas, vertex colors, and zero Base Color RGB factors are display-only. FBX layered/procedural Base Color and separate opacity textures also require conversion before editing. These limitations are shown rather than silently baked incorrectly. |
+| Deformation | Skins, morph targets, and FBX geometry caches are rejected with an export-static-mesh message. Transform animation is not played; authored static transforms are imported with a warning. |
+| GLB extensions | Required extensions are accepted only for `KHR_texture_transform`, `KHR_mesh_quantization`, and `KHR_materials_unlit`. Unsupported required extensions report their names. Draco, meshopt compression, and GPU instancing require export without those features. |
+| Saving | Saving writes the current texture as PNG. An external PNG can be saved back to its path; an embedded image or JPEG needs a PNG destination. FBX/GLB files and their embedded images remain unchanged. |
+
+Imports allow at most 2,000,000 triangles after expanding instances, a 512 MiB
+model file, and bounded external resources/parser allocations. GLB buffer data
+has a 512 MiB aggregate budget. Decoded material images have a 512 MiB aggregate
+budget; each image is limited to 128 MiB encoded data, 256 MiB RGBA / 64 megapixels,
+and 16,384 pixels per dimension. Metadata is checked before pixel decoding, and
+remaining material-image budget is checked before allocating further images.
+These are resource limits, not a guarantee that every model within them will load.
+
+The source distributions are pinned in the repository: [ufbx v0.23.0](third_party/ufbx/README.md)
+for FBX and [cgltf](third_party/cgltf/README.md) for GLB. Their upstream commit IDs,
+source provenance, and MIT license texts are included in `third_party/`.
+GUI builds copy the license texts into the output directory's `licenses/` folder.

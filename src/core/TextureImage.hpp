@@ -11,6 +11,8 @@ namespace codextex {
 class TextureImage {
 public:
     bool LoadPng(const std::filesystem::path& path, std::string& error);
+    bool LoadEncoded(std::span<const std::uint8_t> bytes, std::string& error,
+                      std::size_t maxDecodedBytes = 256ull * 1024 * 1024);
     bool SavePng(const std::filesystem::path& path, std::string& error) const;
     void Assign(std::uint32_t width, std::uint32_t height, std::span<const std::uint8_t> rgba);
     [[nodiscard]] TextureImage CenterCroppedSquare() const;
