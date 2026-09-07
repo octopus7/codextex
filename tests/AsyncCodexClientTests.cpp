@@ -70,6 +70,11 @@ struct MockSession {
     void Set(const wchar_t* name, const std::wstring& value) {
         environment.push_back(std::make_unique<EnvironmentOverride>(name, value));
     }
+    ~MockSession() {
+        // The same variable may be overridden more than once in a test.
+        // Undo the overrides as a stack, restoring the original process value.
+        while (!environment.empty()) environment.pop_back();
+    }
     std::filesystem::path Capture(const std::uint64_t id) const {
         const auto path = directory / (L"projection-" + std::to_wstring(id)) / "capture.png";
         std::filesystem::create_directories(path.parent_path());
@@ -169,6 +174,17 @@ TEST_CASE("Async generation and cancellation do not wait for App Server response
     const auto stop = Clock::now();
     client.Stop();
     CHECK(MillisecondsSince(stop) < 2000);
+}
+
+TEST_CASE("Async startup cannot stay available after its final response is followed by EOF") {
+    MockSession session;
+    session.Set(L"CODEXTEX_MOCK_MODE", L"exit-after-skills-response");
+    codextex::AsyncCodexClient client;
+    REQUIRE(client.Start(session.directory, std::filesystem::path(CODEXTEX_MOCK_CODEX_PATH)));
+    REQUIRE(WaitUntil([&] { return !client.IsStarting() && !client.IsRunning(); }));
+    CHECK_FALSE(client.IsAvailable());
+    CHECK(client.AvailabilityMessage().find("disconnected") != std::string::npos);
+    CHECK_FALSE(client.BeginGeneration(19, session.Capture(19), "offline", "gpt-5.6-sol", "low"));
 }
 
 TEST_CASE("Async completed images stay busy until their events are handed to the UI") {

@@ -106,6 +106,8 @@ private:
     void HandleMessage(const nlohmann::json& message);
     void PushEvent(CodexEvent event);
     void FailPendingRequests(const char* message);
+    void CompleteRequest(std::uint64_t id, nlohmann::json result,
+                         std::exception_ptr error = {});
     void LogDiagnostic(std::string_view message);
     std::filesystem::path CopyGeneratedImage(std::uint64_t jobId,
                                              const std::filesystem::path& source);

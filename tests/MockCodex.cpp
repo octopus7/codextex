@@ -102,6 +102,7 @@ int main() {
             Respond(request, {{"data", {{{"skills", {{{"name", "imagegen"},
                                                         {"enabled", enabled},
                                                         {"path", "C:/mock/imagegen/SKILL.md"}}}}}}}});
+            if (mode == "exit-after-skills-response") return 0;
         } else if (method == "thread/start") {
             if (request.at("params").value("model", "").empty()) {
                 RespondError(request, "thread/start requires a model");

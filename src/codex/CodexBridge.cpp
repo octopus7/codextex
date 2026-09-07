@@ -268,6 +268,21 @@ void CodexBridge::FailPendingRequests(const char* message) {
     }
 }
 
+void CodexBridge::CompleteRequest(const std::uint64_t id, nlohmann::json result,
+                                    std::exception_ptr error) {
+    std::scoped_lock lock(pendingMutex_);
+    const auto found = pending_.find(id);
+    // Abort or timeout may have already settled this request while the reader
+    // was validating its response or processing buffered image events.
+    if (found == pending_.end()) return;
+    if (abortRequested_) {
+        error = std::make_exception_ptr(std::runtime_error("Codex operation was stopped."));
+    }
+    if (error) found->second.promise->set_exception(std::move(error));
+    else found->second.promise->set_value(std::move(result));
+    pending_.erase(found);
+}
+
 bool CodexBridge::LaunchProcess() {
     const auto candidates = FindCodexCommands(executableOverride_);
     if (candidates.empty()) {
@@ -501,7 +516,7 @@ bool CodexBridge::BeginGeneration(const std::uint64_t jobId,
                                   const std::string& userPrompt,
                                   const std::string& model,
                                   const std::string& reasoningEffort) {
-    if (!available_ || userPrompt.empty() || !std::filesystem::exists(capturePath) ||
+    if (!IsAvailable() || userPrompt.empty() || !std::filesystem::exists(capturePath) ||
         model.empty() || reasoningEffort.empty() || IsBusy(jobId)) {
         return false;
     }
@@ -537,6 +552,9 @@ bool CodexBridge::BeginGeneration(const std::uint64_t jobId,
         PushEvent(std::move(event));
         return true;
     } catch (const std::exception& exception) {
+        // The owner will Stop after a terminal abort. Do not wait for the
+        // reader's state lock here if it is still finishing a file operation.
+        if (abortRequested_) return false;
         {
             std::scoped_lock lock(stateMutex_);
             if (const auto found = jobs_.find(jobId); found != jobs_.end()) {
@@ -676,8 +694,8 @@ bool CodexBridge::SendLine(const nlohmann::json& message) {
     {
         std::scoped_lock ioLock(ioMutex_);
         if (abortRequested_) return false;
-        DuplicateHandle(GetCurrentProcess(), GetCurrentThread(), GetCurrentProcess(),
-                        &ioThread, 0, FALSE, DUPLICATE_SAME_ACCESS);
+        if (!DuplicateHandle(GetCurrentProcess(), GetCurrentThread(), GetCurrentProcess(),
+                             &ioThread, 0, FALSE, DUPLICATE_SAME_ACCESS)) return false;
         writerIoThread_ = ioThread;
     }
     DWORD written = 0;
@@ -696,8 +714,8 @@ void CodexBridge::ReadLoop() {
     HANDLE ioThread = nullptr;
     {
         std::scoped_lock lock(ioMutex_);
-        DuplicateHandle(GetCurrentProcess(), GetCurrentThread(), GetCurrentProcess(),
-                        &ioThread, 0, FALSE, DUPLICATE_SAME_ACCESS);
+        if (!DuplicateHandle(GetCurrentProcess(), GetCurrentThread(), GetCurrentProcess(),
+                             &ioThread, 0, FALSE, DUPLICATE_SAME_ACCESS)) running_ = false;
         readerIoThread_ = ioThread;
     }
     std::array<char, 8192> buffer{};
@@ -710,7 +728,8 @@ void CodexBridge::ReadLoop() {
         }
         pendingText.append(buffer.data(), read);
         std::size_t newline = 0;
-        while ((newline = pendingText.find('\n')) != std::string::npos) {
+        while (running_ && !abortRequested_ &&
+               (newline = pendingText.find('\n')) != std::string::npos) {
             std::string line = pendingText.substr(0, newline);
             pendingText.erase(0, newline + 1);
             if (line.empty()) continue;
@@ -750,6 +769,7 @@ void CodexBridge::ReadLoop() {
 }
 
 void CodexBridge::HandleMessage(const nlohmann::json& message) {
+    if (abortRequested_) return;
     if (message.contains("id") && !message["id"].is_null()) {
         const std::uint64_t id = message["id"].get<std::uint64_t>();
         PendingRequest request;
@@ -757,23 +777,24 @@ void CodexBridge::HandleMessage(const nlohmann::json& message) {
             std::scoped_lock lock(pendingMutex_);
             const auto found = pending_.find(id);
             if (found != pending_.end()) {
-                request = std::move(found->second);
-                pending_.erase(found);
+                request = found->second;
             }
         }
         if (request.promise) {
             if (message.contains("error")) {
-                request.promise->set_exception(std::make_exception_ptr(
+                CompleteRequest(id, {}, std::make_exception_ptr(
                     std::runtime_error(message["error"].dump())));
             } else {
                 try {
                     const auto result = message.value("result", nlohmann::json::object());
                     if (request.turnStartJobId) {
+                        if (abortRequested_) return;
                         const auto turnId = result.at("turn").at("id").get<std::string>();
                         if (turnId.empty()) throw std::runtime_error("Codex returned an empty turn ID.");
                         std::deque<nlohmann::json> earlyEvents;
                         {
                             std::scoped_lock lock(stateMutex_);
+                            if (abortRequested_) return;
                             const auto found = jobs_.find(*request.turnStartJobId);
                             if (found != jobs_.end() && found->second.turnStartPending) {
                                 found->second.activeTurnId = turnId;
@@ -783,11 +804,14 @@ void CodexBridge::HandleMessage(const nlohmann::json& message) {
                         }
                         // Keep routing on the reader thread, and establish the turn ID
                         // before processing events or waking the requesting thread.
-                        for (const auto& event : earlyEvents) HandleMessage(event);
+                        for (const auto& event : earlyEvents) {
+                            if (abortRequested_) return;
+                            HandleMessage(event);
+                        }
                     }
-                    request.promise->set_value(result);
+                    CompleteRequest(id, result);
                 } catch (...) {
-                    request.promise->set_exception(std::current_exception());
+                    CompleteRequest(id, {}, std::current_exception());
                 }
             }
         }
@@ -876,11 +900,12 @@ void CodexBridge::LogDiagnostic(const std::string_view message) {
 
 std::filesystem::path CodexBridge::CopyGeneratedImage(const std::uint64_t jobId,
                                                       const std::filesystem::path& source) {
+    if (abortRequested_) return {};
     // Finish an in-flight copy before Forget returns and the UI removes its
     // directory. A forgotten job must never recreate that directory afterward.
     std::scoped_lock stateLock(stateMutex_);
     const auto found = jobs_.find(jobId);
-    if (found == jobs_.end() || !found->second.busy) return {};
+    if (abortRequested_ || found == jobs_.end() || !found->second.busy) return {};
     if (!std::filesystem::exists(source)) {
         CodexEvent event{CodexEventType::Error,
                          "ImageGen reported a path that does not exist."};

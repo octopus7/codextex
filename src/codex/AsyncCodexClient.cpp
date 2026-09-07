@@ -299,6 +299,7 @@ void AsyncCodexClient::PublishState(const bool initializationFinished) {
     std::vector<std::pair<std::uint64_t, bool>> busy;
     {
         std::scoped_lock lock(mutex_);
+        if (stopping_) return;
         for (const auto& [id, job] : jobs_) {
             if (!job.startPending && !job.imageAccepted) busy.emplace_back(id, false);
         }
