@@ -1289,11 +1289,11 @@ void Application::DrawTools() {
     if (!imageGenLogPath_.empty()) {
         ImGui::TextWrapped(Tr("ImageGen log: %s"), Narrow(imageGenLogPath_).c_str());
     }
-    if (!codex_.IsAvailable() && !codex_.IsBusy()) {
+    if (!codex_.IsAvailable() && !codex_.IsStarting() && !codex_.IsBusy()) {
         if (ImGui::Button(Tr("Retry Codex detection"))) {
             const bool started = codex_.Start(sessionDirectory_);
             NormalizeCodexSettings();
-            SetStatus(codex_.AvailabilityMessage(), !started || !codex_.IsAvailable());
+            SetStatus(codex_.AvailabilityMessage(), !started);
         }
     }
 
@@ -1535,11 +1535,8 @@ void Application::DeleteTempFile(const std::filesystem::path& path) {
     if (MessageBoxW(window_, prompt.c_str(), title.c_str(),
                     MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2) != IDYES) return;
     for (const auto id : affectedTabs) CloseProjectionTab(id);
-    std::error_code error;
-    const bool removed = !std::filesystem::exists(path, error) ||
-                         std::filesystem::remove(path, error);
-    if (error || !removed) {
-        SetStatus("Could not delete the selected temporary file.", true);
+    if (!codex_.DeleteTemporaryFile(path)) {
+        SetStatus("Could not queue temporary file deletion.", true);
         return;
     }
     selectedTempFile_.clear();
@@ -1548,7 +1545,7 @@ void Application::DeleteTempFile(const std::filesystem::path& path) {
     tempPreviewMessage_.clear();
     renderer_.ClearSessionPreviewImage();
     tempFilesDirty_ = true;
-    SetStatus("Selected session temporary file deleted.");
+    SetStatus("Temporary file deletion queued.");
 }
 
 void Application::DeleteAllTempFiles() {
@@ -1573,22 +1570,12 @@ void Application::DeleteAllTempFiles() {
     tempPreviewMessage_.clear();
     renderer_.ClearSessionPreviewImage();
 
-    std::uintmax_t removedCount = 0;
-    for (std::filesystem::directory_iterator iterator(
-             sessionDirectory_, std::filesystem::directory_options::skip_permission_denied,
-             error), end;
-         !error && iterator != end; iterator.increment(error)) {
-        removedCount += std::filesystem::remove_all(iterator->path(), error);
-        if (error) break;
-    }
     tempFilesDirty_ = true;
-    RefreshTempFiles();
-    if (error) {
-        SetStatus("Some session temporary files could not be deleted.", true);
-    } else {
-        SetStatus("Deleted " + std::to_string(removedCount) +
-                  " session temporary file(s). The session folder remains active.");
+    if (!codex_.ClearTemporaryFiles()) {
+        SetStatus("Could not queue temporary file deletion.", true);
+        return;
     }
+    SetStatus("Temporary file deletion queued.");
 }
 
 bool Application::OpenObj() {
@@ -2018,16 +2005,15 @@ void Application::ActivateProjectionTab(ProjectionTab& tab) {
 }
 
 void Application::CloseProjectionTab(const std::uint64_t id) {
-    codex_.Cancel(id);
-    codex_.Forget(id);
     const auto found = std::ranges::find(projectionTabs_, id, &ProjectionTab::id);
     if (found == projectionTabs_.end()) return;
+    codex_.Forget(id, !found->temporaryCleanupBlocked);
     const bool wasActive = activeProjectionId_ == id;
     if (workingPreviewProjectionId_ == id) {
         renderer_.ClearWorkingProjectionPreview();
         workingPreviewProjectionId_.reset();
     }
-    CleanupProjectionTemp(*found);
+    tempFilesDirty_ = true;
     projectionTabs_.erase(found);
     if (wasActive) {
         activeProjectionId_.reset();
@@ -2042,10 +2028,9 @@ void Application::CloseProjectionTab(const std::uint64_t id) {
 
 void Application::ClearProjectionTabs() {
     for (auto& tab : projectionTabs_) {
-        codex_.Cancel(tab.id);
-        codex_.Forget(tab.id);
-        CleanupProjectionTemp(tab);
+        codex_.Forget(tab.id, !tab.temporaryCleanupBlocked);
     }
+    tempFilesDirty_ = true;
     projectionTabs_.clear();
     renderer_.ClearWorkingProjectionPreview();
     workingPreviewProjectionId_.reset();
@@ -2225,7 +2210,11 @@ void Application::HandleCodexEvents() {
     for (CodexEvent& event : codex_.PollEvents()) {
         ProjectionTab* tab = FindProjectionTab(event.jobId);
         if (!tab) {
-            if (event.jobId == 0) SetStatus(event.message, event.type == CodexEventType::Error);
+            if (event.jobId == 0) {
+                tempFilesDirty_ = true;
+                SetStatus(event.message, event.type == CodexEventType::Error);
+                if (codex_.IsAvailable()) NormalizeCodexSettings();
+            }
             continue;
         }
         if (event.type == CodexEventType::GeneratedImage) {
@@ -2279,21 +2268,22 @@ void Application::HandleCodexEvents() {
             }
             tab->projectionPath = archive.image;
             tab->metadataPath = archive.metadata;
+            // The image is safely archived even if its display upload fails.
+            codex_.FinishAfterGeneratedImage(tab->id, true);
+            tab->capturePath.clear();
+            tab->temporaryDirectory.clear();
             if (activeProjectionId_ == tab->id && !renderer_.SetProjectionImage(image, error)) {
                 tab->status = error;
                 tab->statusIsError = true;
-                CleanupProjectionTemp(*tab);
                 continue;
             }
             tab->projectionImage = std::move(image);
             tab->projectionLoaded = true;
             tab->status = "ImageGen result archived; refine the mask before baking.";
             tab->statusIsError = false;
-            codex_.FinishAfterGeneratedImage(tab->id);
             if (activeProjectionId_ == tab->id) {
                 RefreshProjectionWorkingPreview(*tab);
             }
-            CleanupProjectionTemp(*tab);
         } else {
             tab->status = event.message;
             tab->statusIsError = event.type == CodexEventType::Error;

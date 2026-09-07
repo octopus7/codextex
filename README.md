@@ -16,7 +16,7 @@ state. Only the PNG texture is ever saved.
 - vcpkg (the Visual Studio bundled copy is supported)
 - Optional AI features: `codex` on `PATH`, signed in with ChatGPT, with the
   built-in `imagegen` skill enabled. CodexTex never starts login or falls back
-  to an API key.
+to an API key.
 
 ## Configure and build
 
@@ -137,6 +137,12 @@ Mask feathering runs as a Direct3D 11 jump-flood compute pass. The binary lasso
 or brush mask remains authoritative, so feathering only reduces alpha inward;
 the frozen depth, visible-face set, and front-facing angle test are applied
 again during the UV-space bake.
+
+Codex initialization, generation requests, cancellation, and reconnection run on
+a background command queue. Closing a projection discards its subsequent events;
+its temporary directory is cleaned only after its in-flight operations settle.
+Projection baking validates frozen triangle IDs as well as depth, so other mesh
+surfaces and inference references correctly block projection into occluded UVs.
 
 ## Tests
 

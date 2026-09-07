@@ -40,6 +40,7 @@ add_executable(CodexTex WIN32
   src/app/Application.cpp
   src/graphics/Renderer.cpp
   src/codex/CodexBridge.cpp
+  src/codex/AsyncCodexClient.cpp
 )
 target_include_directories(CodexTex PRIVATE src)
 target_compile_definitions(CodexTex PRIVATE UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN)
@@ -71,10 +72,12 @@ if(CODEXTEX_BUILD_TESTS)
   )
   add_executable(codextex_tests
     src/codex/CodexBridge.cpp
+    src/codex/AsyncCodexClient.cpp
     src/graphics/Renderer.cpp
     tests/AppSettingsTests.cpp
     tests/GenerationArchiveTests.cpp
     tests/CodexBridgeTests.cpp
+    tests/AsyncCodexClientTests.cpp
     tests/MeshTests.cpp
     tests/MaskTests.cpp
     tests/LocalizationTests.cpp

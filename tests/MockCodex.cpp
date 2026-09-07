@@ -3,7 +3,9 @@
 #include <cstdlib>
 #include <chrono>
 #include <filesystem>
+#include <fstream>
 #include <iostream>
+#include <process.h>
 #include <string>
 #include <thread>
 
@@ -41,10 +43,19 @@ std::string Environment(const char* name, const std::string& fallback = {}) {
     return result;
 }
 
+void Mark(const char* name, const std::string& value) {
+    const auto path = Environment(name);
+    if (!path.empty()) std::ofstream(path, std::ios::binary | std::ios::app) << value << '\n';
+}
+
 } // namespace
 
 int main() {
     const std::string mode = Environment("CODEXTEX_MOCK_MODE", "success");
+    const std::string blockMethod = Environment("CODEXTEX_MOCK_BLOCK_METHOD");
+    const int blockOccurrence = std::stoi(Environment("CODEXTEX_MOCK_BLOCK_OCCURRENCE", "1"));
+    int blockCount = 0;
+    Mark("CODEXTEX_MOCK_PID", std::to_string(_getpid()));
     std::uint64_t threadCounter = 0;
     std::uint64_t turnCounter = 0;
     std::string latestThreadId;
@@ -55,6 +66,16 @@ int main() {
         const auto request = nlohmann::json::parse(line);
         const std::string method = request.value("method", "");
         if (!request.contains("id")) continue;
+        if (method == blockMethod && ++blockCount == blockOccurrence) {
+            Mark("CODEXTEX_MOCK_ENTERED", method);
+            const auto release = std::filesystem::path(Environment("CODEXTEX_MOCK_RELEASE"));
+            const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+            while (!std::filesystem::exists(release) &&
+                   std::chrono::steady_clock::now() < deadline) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(5));
+            }
+        }
+        if (method == Environment("CODEXTEX_MOCK_DISCONNECT_METHOD")) return 0;
 
         if (method == "initialize") {
             Respond(request, nlohmann::json::object());
@@ -132,6 +153,7 @@ int main() {
                 if (mode != "image-without-turn-completion") {
                     Notify("turn/completed", {{"threadId", threadId}, {"turnId", turnId},
                         {"turn", {{"id", turnId}, {"status", "completed"}}}});
+                    Mark("CODEXTEX_MOCK_SENT", turnId);
                 }
             }
         } else if (method == "turn/interrupt") {
@@ -139,6 +161,10 @@ int main() {
             const auto& params = request.at("params");
             const std::string threadId = params.at("threadId").get<std::string>();
             const std::string turnId = params.at("turnId").get<std::string>();
+            Mark("CODEXTEX_MOCK_INTERRUPTED", threadId);
+            if (Environment("CODEXTEX_MOCK_LATE_IMAGE_ON_INTERRUPT") == "1") {
+                NotifyImage(threadId, turnId, Environment("CODEXTEX_MOCK_IMAGE"));
+            }
             if (mode == "late-events-after-forget" && threadId != latestThreadId) {
                 // The test releases these notifications only after Forget has
                 // removed the first job, without relying on scheduling delays.

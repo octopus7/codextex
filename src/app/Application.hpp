@@ -1,6 +1,6 @@
 #pragma once
 
-#include "codex/CodexBridge.hpp"
+#include "codex/AsyncCodexClient.hpp"
 #include "core/AppSettings.hpp"
 #include "core/Localization.hpp"
 #include "core/Mask.hpp"
@@ -99,7 +99,7 @@ private:
     HINSTANCE instance_{};
     HWND window_{};
     Renderer renderer_;
-    CodexBridge codex_;
+    AsyncCodexClient codex_;
     Mesh mesh_;
     TextureImage sourceTexture_;
     CameraState camera_{};

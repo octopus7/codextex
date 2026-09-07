@@ -173,7 +173,9 @@ bool CodexBridge::EnableDiagnosticLog(const std::filesystem::path& logPath) {
 bool CodexBridge::Start(const std::filesystem::path& sessionDirectory,
                         const std::filesystem::path& executableOverride) {
     Stop();
+    if (abortRequested_) return false;
     models_ = FallbackModels();
+    imagegenSkillPath_.clear();
     sessionDirectory_ = sessionDirectory;
     executableOverride_ = executableOverride;
     LogDiagnostic("Starting Codex bridge. Session directory: " + PathUtf8(sessionDirectory_));
@@ -198,12 +200,13 @@ void CodexBridge::Stop() {
     if (running_ || process_ != nullptr) LogDiagnostic("Stopping Codex App Server.");
     available_ = false;
     running_ = false;
+    FailPendingRequests("Codex stopped.");
     if (childStdIn_ != nullptr) {
         CloseHandle(childStdIn_);
         childStdIn_ = nullptr;
     }
     if (process_ != nullptr) {
-        WaitForSingleObject(process_, 500);
+        WaitForSingleObject(process_, 100);
     }
     if (job_ != nullptr) {
         CloseHandle(job_);
@@ -211,12 +214,17 @@ void CodexBridge::Stop() {
     } else if (process_ != nullptr) {
         TerminateProcess(process_, 0);
     }
+    if (reader_.joinable()) {
+        {
+            std::scoped_lock lock(ioMutex_);
+            if (readerIoThread_) CancelSynchronousIo(readerIoThread_);
+        }
+        reader_.join();
+    }
+    // A synchronous read must finish before its handle is closed.
     if (childStdOut_ != nullptr) {
         CloseHandle(childStdOut_);
         childStdOut_ = nullptr;
-    }
-    if (reader_.joinable()) {
-        reader_.join();
     }
     if (processThread_ != nullptr) {
         CloseHandle(processThread_);
@@ -227,19 +235,36 @@ void CodexBridge::Stop() {
         process_ = nullptr;
     }
 
-    std::scoped_lock lock(pendingMutex_);
-    for (auto& [id, request] : pending_) {
-        (void)id;
-        try {
-            request.promise->set_exception(std::make_exception_ptr(std::runtime_error("Codex stopped.")));
-        } catch (...) {
-        }
-    }
-    pending_.clear();
     {
         std::scoped_lock stateLock(stateMutex_);
         jobs_.clear();
         jobsByThread_.clear();
+    }
+}
+
+void CodexBridge::AbortPendingRequests() {
+    {
+        std::scoped_lock lock(pendingMutex_);
+        abortRequested_ = true;
+    }
+    FailPendingRequests("Codex operation was stopped.");
+    std::scoped_lock lock(ioMutex_);
+    if (writerIoThread_) CancelSynchronousIo(writerIoThread_);
+    if (readerIoThread_) CancelSynchronousIo(readerIoThread_);
+}
+
+void CodexBridge::FailPendingRequests(const char* message) {
+    std::unordered_map<std::uint64_t, PendingRequest> pending;
+    {
+        std::scoped_lock lock(pendingMutex_);
+        pending.swap(pending_);
+    }
+    for (auto& [id, request] : pending) {
+        (void)id;
+        try {
+            request.promise->set_exception(std::make_exception_ptr(std::runtime_error(message)));
+        } catch (const std::future_error&) {
+        }
     }
 }
 
@@ -293,7 +318,7 @@ bool CodexBridge::LaunchProcess() {
         LogDiagnostic("Trying App Server command: " + PathUtf8(candidate.command));
         std::wstring commandLine = candidate.commandLine;
         if (CreateProcessW(candidate.application.c_str(), commandLine.data(), nullptr, nullptr, TRUE,
-                           CREATE_NO_WINDOW, nullptr, sessionDirectory_.c_str(), &startup,
+                           CREATE_NO_WINDOW | CREATE_SUSPENDED, nullptr, sessionDirectory_.c_str(), &startup,
                            &processInfo)) {
             launched = &candidate;
             break;
@@ -322,8 +347,16 @@ bool CodexBridge::LaunchProcess() {
     if (job_) {
         JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits{};
         limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
-        SetInformationJobObject(job_, JobObjectExtendedLimitInformation, &limits, sizeof(limits));
-        AssignProcessToJobObject(job_, process_);
+        if (!SetInformationJobObject(job_, JobObjectExtendedLimitInformation, &limits, sizeof(limits)) ||
+            !AssignProcessToJobObject(job_, process_)) {
+            CloseHandle(job_);
+            job_ = nullptr;
+        }
+    }
+    if (!job_ || ResumeThread(processThread_) == static_cast<DWORD>(-1)) {
+        availabilityMessage_ = "Could not safely start the owned Codex App Server process.";
+        Stop();
+        return false;
     }
     running_ = true;
     return true;
@@ -616,6 +649,9 @@ nlohmann::json CodexBridge::SendRequest(const std::string& method, nlohmann::jso
     auto future = promise->get_future();
     {
         std::scoped_lock lock(pendingMutex_);
+        if (abortRequested_ || !running_) {
+            throw std::runtime_error("Codex operation was stopped.");
+        }
         pending_.emplace(id, PendingRequest{promise, turnStartJobId});
     }
     if (!SendLine({{"method", method}, {"id", id}, {"params", std::move(params)}})) {
@@ -636,16 +672,37 @@ bool CodexBridge::SendLine(const nlohmann::json& message) {
     LogDiagnostic("CLIENT -> " + json);
     const std::string line = json + "\n";
     std::scoped_lock lock(writeMutex_);
+    HANDLE ioThread = nullptr;
+    {
+        std::scoped_lock ioLock(ioMutex_);
+        if (abortRequested_) return false;
+        DuplicateHandle(GetCurrentProcess(), GetCurrentThread(), GetCurrentProcess(),
+                        &ioThread, 0, FALSE, DUPLICATE_SAME_ACCESS);
+        writerIoThread_ = ioThread;
+    }
     DWORD written = 0;
-    return childStdIn_ != nullptr &&
+    const bool success = !abortRequested_ && childStdIn_ != nullptr &&
         WriteFile(childStdIn_, line.data(), static_cast<DWORD>(line.size()), &written, nullptr) &&
         written == line.size();
+    {
+        std::scoped_lock ioLock(ioMutex_);
+        writerIoThread_ = nullptr;
+        if (ioThread) CloseHandle(ioThread);
+    }
+    return success;
 }
 
 void CodexBridge::ReadLoop() {
+    HANDLE ioThread = nullptr;
+    {
+        std::scoped_lock lock(ioMutex_);
+        DuplicateHandle(GetCurrentProcess(), GetCurrentThread(), GetCurrentProcess(),
+                        &ioThread, 0, FALSE, DUPLICATE_SAME_ACCESS);
+        readerIoThread_ = ioThread;
+    }
     std::array<char, 8192> buffer{};
     std::string pendingText;
-    while (running_) {
+    while (running_ && !abortRequested_) {
         DWORD read = 0;
         if (!ReadFile(childStdOut_, buffer.data(), static_cast<DWORD>(buffer.size()), &read, nullptr) ||
             read == 0) {
@@ -667,6 +724,7 @@ void CodexBridge::ReadLoop() {
     }
     running_ = false;
     available_ = false;
+    FailPendingRequests("Codex App Server disconnected.");
     std::vector<std::uint64_t> interruptedJobs;
     {
         std::scoped_lock lock(stateMutex_);
@@ -683,6 +741,11 @@ void CodexBridge::ReadLoop() {
                          "Codex App Server stopped during the operation."};
         event.jobId = jobId;
         PushEvent(std::move(event));
+    }
+    {
+        std::scoped_lock lock(ioMutex_);
+        readerIoThread_ = nullptr;
+        if (ioThread) CloseHandle(ioThread);
     }
 }
 

@@ -25,6 +25,7 @@ enum class CodexEventType {
     Progress,
     GeneratedImage,
     Error,
+    TemporaryFilesCleared,
 };
 
 struct CodexEvent {
@@ -57,9 +58,12 @@ public:
                const std::filesystem::path& executableOverride = {});
     bool EnableDiagnosticLog(const std::filesystem::path& logPath);
     void Stop();
+    // Thread-safe terminal abort used to unblock the owner before Stop.
+    // Construct a new bridge if another session is needed after this call.
+    void AbortPendingRequests();
 
     [[nodiscard]] bool IsRunning() const noexcept { return running_; }
-    [[nodiscard]] bool IsAvailable() const noexcept { return available_; }
+    [[nodiscard]] bool IsAvailable() const noexcept { return available_ && running_; }
     [[nodiscard]] bool IsBusy() const noexcept;
     [[nodiscard]] bool IsBusy(std::uint64_t jobId) const noexcept;
     [[nodiscard]] const std::string& AvailabilityMessage() const noexcept { return availabilityMessage_; }
@@ -101,6 +105,7 @@ private:
     void ReadLoop();
     void HandleMessage(const nlohmann::json& message);
     void PushEvent(CodexEvent event);
+    void FailPendingRequests(const char* message);
     void LogDiagnostic(std::string_view message);
     std::filesystem::path CopyGeneratedImage(std::uint64_t jobId,
                                              const std::filesystem::path& source);
@@ -113,6 +118,7 @@ private:
     std::thread reader_;
     std::atomic_bool running_{false};
     std::atomic_bool available_{false};
+    std::atomic_bool abortRequested_{false};
     std::atomic<std::uint64_t> nextRequestId_{1};
     std::uint64_t generatedIndex_{};
 
@@ -127,6 +133,9 @@ private:
     std::unordered_map<std::string, std::uint64_t> jobsByThread_;
 
     std::mutex writeMutex_;
+    std::mutex ioMutex_;
+    HANDLE writerIoThread_{nullptr};
+    HANDLE readerIoThread_{nullptr};
     mutable std::mutex stateMutex_;
     std::mutex pendingMutex_;
     std::unordered_map<std::uint64_t, PendingRequest> pending_;
