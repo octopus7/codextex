@@ -83,12 +83,20 @@ private:
         std::string reasoningEffort;
         bool busy{};
         bool generatedImageAccepted{};
+        bool turnStartPending{};
+        std::deque<nlohmann::json> pendingTurnEvents;
+    };
+
+    struct PendingRequest {
+        std::shared_ptr<std::promise<nlohmann::json>> promise;
+        std::optional<std::uint64_t> turnStartJobId;
     };
 
     bool EnsureThread(std::uint64_t jobId, const std::string& model);
     std::optional<std::uint64_t> FindJob(const nlohmann::json& params) const;
     nlohmann::json SendRequest(const std::string& method, nlohmann::json params,
-                               std::chrono::milliseconds timeout = std::chrono::seconds(15));
+                               std::chrono::milliseconds timeout = std::chrono::seconds(15),
+                               std::optional<std::uint64_t> turnStartJobId = std::nullopt);
     bool SendLine(const nlohmann::json& message);
     void ReadLoop();
     void HandleMessage(const nlohmann::json& message);
@@ -121,7 +129,7 @@ private:
     std::mutex writeMutex_;
     mutable std::mutex stateMutex_;
     std::mutex pendingMutex_;
-    std::unordered_map<std::uint64_t, std::shared_ptr<std::promise<nlohmann::json>>> pending_;
+    std::unordered_map<std::uint64_t, PendingRequest> pending_;
     std::mutex eventMutex_;
     std::deque<CodexEvent> events_;
     std::mutex logMutex_;

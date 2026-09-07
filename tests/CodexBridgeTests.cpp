@@ -67,6 +67,25 @@ std::vector<codextex::CodexEvent> WaitForIdle(codextex::CodexBridge& bridge,
     return events;
 }
 
+std::vector<codextex::CodexEvent> WaitForMessage(codextex::CodexBridge& bridge,
+                                               const std::string& message) {
+    std::vector<codextex::CodexEvent> events;
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+    while (std::chrono::steady_clock::now() < deadline) {
+        auto next = bridge.PollEvents();
+        events.insert(events.end(), std::make_move_iterator(next.begin()),
+                      std::make_move_iterator(next.end()));
+        if (std::ranges::any_of(events, [&message](const auto& event) {
+                return event.message.find(message) != std::string::npos;
+            })) {
+            return events;
+        }
+        Sleep(10);
+    }
+    FAIL("Timed out waiting for mock event: " << message);
+    return events;
+}
+
 } // namespace
 
 TEST_CASE("App Server mock disables AI when signed out or imagegen is missing") {
@@ -241,5 +260,86 @@ TEST_CASE("App Server routes concurrent projection jobs independently") {
     CHECK_FALSE(bridge.IsBusy(22));
     CHECK(std::any_of(secondEvents.begin(), secondEvents.end(), [](const auto& event) {
         return event.jobId == 22 && event.type == codextex::CodexEventType::Error;
+    }));
+}
+
+TEST_CASE("Late image and completion from a forgotten job cannot affect another projection") {
+    ScopedEnvironment mode(L"CODEXTEX_MOCK_MODE", L"late-events-after-forget");
+    const auto session = Session(L"mock-forgotten-job");
+    const auto capture = session / "capture.png";
+    const auto sourceImage = session / "mock-source.png";
+    const auto releasePath = session / "release-late-events";
+    std::ofstream(capture, std::ios::binary) << "mock-capture";
+    std::ofstream(sourceImage, std::ios::binary) << "mock-png";
+    ScopedEnvironment image(L"CODEXTEX_MOCK_IMAGE", sourceImage.c_str());
+    ScopedEnvironment release(L"CODEXTEX_MOCK_RELEASE", releasePath.c_str());
+
+    codextex::CodexBridge bridge;
+    REQUIRE(bridge.Start(session, std::filesystem::path(CODEXTEX_MOCK_CODEX_PATH)));
+    REQUIRE(bridge.BeginGeneration(41, capture, "first", "gpt-5.6-sol", "low"));
+    REQUIRE(bridge.BeginGeneration(42, capture, "second", "gpt-5.6-sol", "low"));
+    bridge.Cancel(41);
+    bridge.Forget(41);
+    std::ofstream(releasePath) << "release";
+
+    const auto events = WaitForMessage(bridge, "late-events-delivered");
+    CHECK_FALSE(bridge.IsBusy(41));
+    CHECK(bridge.IsBusy(42));
+    CHECK_FALSE(std::ranges::any_of(events, [](const auto& event) {
+        return event.jobId == 41 || event.type == codextex::CodexEventType::Error ||
+               event.type == codextex::CodexEventType::GeneratedImage;
+    }));
+    CHECK_FALSE(std::filesystem::exists(session / "projection-41"));
+    CHECK_FALSE(std::filesystem::exists(session / "projection-42"));
+
+    bridge.Cancel(42);
+    (void)WaitForIdle(bridge, 42);
+    CHECK_FALSE(bridge.IsBusy(42));
+}
+
+TEST_CASE("Mismatched turn IDs are rejected before and after the start response") {
+    ScopedEnvironment mode(L"CODEXTEX_MOCK_MODE", L"mismatched-turn-events");
+    const auto session = Session(L"mock-mismatched-turn");
+    const auto capture = session / "capture.png";
+    const auto sourceImage = session / "mock-source.png";
+    std::ofstream(capture, std::ios::binary) << "mock-capture";
+    std::ofstream(sourceImage, std::ios::binary) << "mock-png";
+    ScopedEnvironment image(L"CODEXTEX_MOCK_IMAGE", sourceImage.c_str());
+
+    codextex::CodexBridge bridge;
+    REQUIRE(bridge.Start(session, std::filesystem::path(CODEXTEX_MOCK_CODEX_PATH)));
+    REQUIRE(bridge.BeginGeneration(51, capture, "current turn", "gpt-5.6-sol", "low"));
+    const auto events = WaitForMessage(bridge, "stale-events-delivered");
+    CHECK(bridge.IsBusy(51));
+    CHECK_FALSE(std::ranges::any_of(events, [](const auto& event) {
+        return event.type == codextex::CodexEventType::Error ||
+               event.type == codextex::CodexEventType::GeneratedImage;
+    }));
+    CHECK_FALSE(std::filesystem::exists(session / "projection-51"));
+    bridge.Cancel(51);
+    (void)WaitForIdle(bridge, 51);
+    CHECK_FALSE(bridge.IsBusy(51));
+}
+
+TEST_CASE("A matching generation can complete before the start response") {
+    ScopedEnvironment mode(L"CODEXTEX_MOCK_MODE", L"completion-before-start-response");
+    const auto session = Session(L"mock-early-completion");
+    const auto capture = session / "capture.png";
+    const auto sourceImage = session / "mock-source.png";
+    std::ofstream(capture, std::ios::binary) << "mock-capture";
+    std::ofstream(sourceImage, std::ios::binary) << "mock-png";
+    ScopedEnvironment image(L"CODEXTEX_MOCK_IMAGE", sourceImage.c_str());
+
+    codextex::CodexBridge bridge;
+    REQUIRE(bridge.Start(session, std::filesystem::path(CODEXTEX_MOCK_CODEX_PATH)));
+    REQUIRE(bridge.BeginGeneration(61, capture, "early result", "gpt-5.6-sol", "low"));
+    const auto events = WaitForIdle(bridge, 61);
+    CHECK_FALSE(bridge.IsBusy(61));
+    CHECK(std::ranges::count_if(events, [](const auto& event) {
+        return event.jobId == 61 && event.type == codextex::CodexEventType::GeneratedImage &&
+               std::filesystem::is_regular_file(event.imagePath);
+    }) == 1);
+    CHECK_FALSE(std::ranges::any_of(events, [](const auto& event) {
+        return event.type == codextex::CodexEventType::Error;
     }));
 }

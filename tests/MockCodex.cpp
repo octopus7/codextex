@@ -1,8 +1,11 @@
 #include <nlohmann/json.hpp>
 
 #include <cstdlib>
+#include <chrono>
+#include <filesystem>
 #include <iostream>
 #include <string>
+#include <thread>
 
 namespace {
 
@@ -22,6 +25,13 @@ void Notify(const std::string& method, nlohmann::json params) {
               << '\n' << std::flush;
 }
 
+void NotifyImage(const std::string& threadId, const std::string& turnId,
+                 const std::string& imagePath) {
+    Notify("item/completed", {{"threadId", threadId}, {"turnId", turnId},
+        {"item", {{"type", "imageGeneration"}, {"status", "completed"},
+                  {"savedPath", imagePath}}}});
+}
+
 std::string Environment(const char* name, const std::string& fallback = {}) {
     char* value = nullptr;
     std::size_t size = 0;
@@ -37,6 +47,8 @@ int main() {
     const std::string mode = Environment("CODEXTEX_MOCK_MODE", "success");
     std::uint64_t threadCounter = 0;
     std::uint64_t turnCounter = 0;
+    std::string latestThreadId;
+    std::string latestTurnId;
     std::string line;
     while (std::getline(std::cin, line)) {
         if (line.empty()) continue;
@@ -91,11 +103,32 @@ int main() {
             }
             const std::string threadId = request.at("params").at("threadId").get<std::string>();
             const std::string turnId = "generation-turn-" + std::to_string(++turnCounter);
+            latestThreadId = threadId;
+            latestTurnId = turnId;
+            if (mode == "completion-before-start-response") {
+                NotifyImage(threadId, turnId, Environment("CODEXTEX_MOCK_IMAGE"));
+                Notify("turn/completed", {{"threadId", threadId},
+                    {"turn", {{"id", turnId}, {"status", "completed"}}}});
+                Respond(request, {{"turn", {{"id", turnId}}}});
+                continue;
+            }
+            if (mode == "mismatched-turn-events") {
+                // Emit a stale turn before the response to exercise the window
+                // where the client has not learned the active turn ID yet.
+                NotifyImage(threadId, "stale-turn", Environment("CODEXTEX_MOCK_IMAGE"));
+                Notify("turn/completed", {{"threadId", threadId},
+                    {"turn", {{"id", "stale-turn"}, {"status", "interrupted"}}}});
+                Respond(request, {{"turn", {{"id", turnId}}}});
+                NotifyImage(threadId, "stale-turn", Environment("CODEXTEX_MOCK_IMAGE"));
+                Notify("turn/completed", {{"threadId", threadId}, {"turnId", turnId},
+                    {"turn", {{"id", "stale-turn"}, {"status", "interrupted"}}}});
+                Notify("item/started", {{"threadId", threadId}, {"turnId", turnId},
+                    {"item", {{"type", "imageGeneration"}, {"status", "stale-events-delivered"}}}});
+                continue;
+            }
             Respond(request, {{"turn", {{"id", turnId}}}});
-            if (mode != "hold-generation") {
-                Notify("item/completed", {{"threadId", threadId}, {"turnId", turnId},
-                    {"item", {{"type", "imageGeneration"}, {"status", "completed"},
-                              {"savedPath", Environment("CODEXTEX_MOCK_IMAGE")}}}});
+            if (mode != "hold-generation" && mode != "late-events-after-forget") {
+                NotifyImage(threadId, turnId, Environment("CODEXTEX_MOCK_IMAGE"));
                 if (mode != "image-without-turn-completion") {
                     Notify("turn/completed", {{"threadId", threadId}, {"turnId", turnId},
                         {"turn", {{"id", turnId}, {"status", "completed"}}}});
@@ -106,6 +139,22 @@ int main() {
             const auto& params = request.at("params");
             const std::string threadId = params.at("threadId").get<std::string>();
             const std::string turnId = params.at("turnId").get<std::string>();
+            if (mode == "late-events-after-forget" && threadId != latestThreadId) {
+                // The test releases these notifications only after Forget has
+                // removed the first job, without relying on scheduling delays.
+                const auto release = std::filesystem::path(Environment("CODEXTEX_MOCK_RELEASE"));
+                const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+                while (!std::filesystem::exists(release) &&
+                       std::chrono::steady_clock::now() < deadline) {
+                    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+                }
+                NotifyImage(threadId, turnId, Environment("CODEXTEX_MOCK_IMAGE"));
+                Notify("turn/completed", {{"threadId", threadId}, {"turnId", turnId},
+                    {"turn", {{"id", turnId}, {"status", "interrupted"}}}});
+                Notify("item/started", {{"threadId", latestThreadId}, {"turnId", latestTurnId},
+                    {"item", {{"type", "imageGeneration"}, {"status", "late-events-delivered"}}}});
+                continue;
+            }
             Notify("turn/completed", {{"threadId", threadId}, {"turnId", turnId},
                 {"turn", {{"id", turnId}, {"status", "interrupted"}}}});
         } else {

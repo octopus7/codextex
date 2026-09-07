@@ -228,10 +228,10 @@ void CodexBridge::Stop() {
     }
 
     std::scoped_lock lock(pendingMutex_);
-    for (auto& [id, promise] : pending_) {
+    for (auto& [id, request] : pending_) {
         (void)id;
         try {
-            promise->set_exception(std::make_exception_ptr(std::runtime_error("Codex stopped.")));
+            request.promise->set_exception(std::make_exception_ptr(std::runtime_error("Codex stopped.")));
         } catch (...) {
         }
     }
@@ -481,12 +481,15 @@ bool CodexBridge::BeginGeneration(const std::uint64_t jobId,
         auto& job = jobs_[jobId];
         job.busy = true;
         job.generatedImageAccepted = false;
+        job.activeTurnId.clear();
+        job.turnStartPending = true;
+        job.pendingTurnEvents.clear();
         job.model = model;
         job.reasoningEffort = reasoningEffort;
         threadId = job.threadId;
     }
     try {
-        const auto result = SendRequest(
+        (void)SendRequest(
             "turn/start",
             {{"threadId", threadId},
              {"model", model},
@@ -494,12 +497,8 @@ bool CodexBridge::BeginGeneration(const std::uint64_t jobId,
              {"input",
               {{{"type", "text"}, {"text", PromptBuilder::GenerationPrompt(userPrompt)}},
                {{"type", "localImage"}, {"path", PathUtf8(capturePath)}},
-               {{"type", "skill"}, {"name", "imagegen"}, {"path", PathUtf8(imagegenSkillPath_)}}}}});
-        {
-            std::scoped_lock lock(stateMutex_);
-            auto& job = jobs_[jobId];
-            if (job.busy) job.activeTurnId = result.at("turn").at("id").get<std::string>();
-        }
+               {{"type", "skill"}, {"name", "imagegen"}, {"path", PathUtf8(imagegenSkillPath_)}}}}},
+            std::chrono::seconds(15), jobId);
         CodexEvent event{CodexEventType::Progress, "ImageGen started."};
         event.jobId = jobId;
         PushEvent(std::move(event));
@@ -507,9 +506,13 @@ bool CodexBridge::BeginGeneration(const std::uint64_t jobId,
     } catch (const std::exception& exception) {
         {
             std::scoped_lock lock(stateMutex_);
-            auto& job = jobs_[jobId];
-            job.busy = false;
-            job.activeTurnId.clear();
+            if (const auto found = jobs_.find(jobId); found != jobs_.end()) {
+                auto& job = found->second;
+                job.busy = false;
+                job.activeTurnId.clear();
+                job.turnStartPending = false;
+                job.pendingTurnEvents.clear();
+            }
         }
         CodexEvent event{CodexEventType::Error,
                          std::string("Could not start ImageGen: ") + exception.what()};
@@ -573,6 +576,8 @@ void CodexBridge::Forget(const std::uint64_t jobId) {
     if (found == jobs_.end()) return;
     if (!found->second.threadId.empty()) jobsByThread_.erase(found->second.threadId);
     jobs_.erase(found);
+    std::scoped_lock eventLock(eventMutex_);
+    std::erase_if(events_, [jobId](const CodexEvent& event) { return event.jobId == jobId; });
 }
 
 std::vector<CodexEvent> CodexBridge::PollEvents() {
@@ -588,6 +593,8 @@ std::optional<std::uint64_t> CodexBridge::FindJob(const nlohmann::json& params) 
     if (!threadId.empty()) {
         const auto found = jobsByThread_.find(threadId);
         if (found != jobsByThread_.end()) return found->second;
+        // An explicit identity must never fall back to another projection.
+        return std::nullopt;
     }
     std::optional<std::uint64_t> onlyBusy;
     for (const auto& [jobId, job] : jobs_) {
@@ -599,7 +606,8 @@ std::optional<std::uint64_t> CodexBridge::FindJob(const nlohmann::json& params) 
 }
 
 nlohmann::json CodexBridge::SendRequest(const std::string& method, nlohmann::json params,
-                                        const std::chrono::milliseconds timeout) {
+                                        const std::chrono::milliseconds timeout,
+                                        const std::optional<std::uint64_t> turnStartJobId) {
     if (!running_) {
         throw std::runtime_error("Codex process is not running.");
     }
@@ -608,7 +616,7 @@ nlohmann::json CodexBridge::SendRequest(const std::string& method, nlohmann::jso
     auto future = promise->get_future();
     {
         std::scoped_lock lock(pendingMutex_);
-        pending_.emplace(id, promise);
+        pending_.emplace(id, PendingRequest{promise, turnStartJobId});
     }
     if (!SendLine({{"method", method}, {"id", id}, {"params", std::move(params)}})) {
         std::scoped_lock lock(pendingMutex_);
@@ -666,6 +674,8 @@ void CodexBridge::ReadLoop() {
             if (job.busy) interruptedJobs.push_back(jobId);
             job.busy = false;
             job.activeTurnId.clear();
+            job.turnStartPending = false;
+            job.pendingTurnEvents.clear();
         }
     }
     for (const auto jobId : interruptedJobs) {
@@ -679,39 +689,74 @@ void CodexBridge::ReadLoop() {
 void CodexBridge::HandleMessage(const nlohmann::json& message) {
     if (message.contains("id") && !message["id"].is_null()) {
         const std::uint64_t id = message["id"].get<std::uint64_t>();
-        std::shared_ptr<std::promise<nlohmann::json>> promise;
+        PendingRequest request;
         {
             std::scoped_lock lock(pendingMutex_);
             const auto found = pending_.find(id);
             if (found != pending_.end()) {
-                promise = found->second;
+                request = std::move(found->second);
                 pending_.erase(found);
             }
         }
-        if (promise) {
+        if (request.promise) {
             if (message.contains("error")) {
-                promise->set_exception(std::make_exception_ptr(
+                request.promise->set_exception(std::make_exception_ptr(
                     std::runtime_error(message["error"].dump())));
             } else {
-                promise->set_value(message.value("result", nlohmann::json::object()));
+                try {
+                    const auto result = message.value("result", nlohmann::json::object());
+                    if (request.turnStartJobId) {
+                        const auto turnId = result.at("turn").at("id").get<std::string>();
+                        if (turnId.empty()) throw std::runtime_error("Codex returned an empty turn ID.");
+                        std::deque<nlohmann::json> earlyEvents;
+                        {
+                            std::scoped_lock lock(stateMutex_);
+                            const auto found = jobs_.find(*request.turnStartJobId);
+                            if (found != jobs_.end() && found->second.turnStartPending) {
+                                found->second.activeTurnId = turnId;
+                                found->second.turnStartPending = false;
+                                earlyEvents.swap(found->second.pendingTurnEvents);
+                            }
+                        }
+                        // Keep routing on the reader thread, and establish the turn ID
+                        // before processing events or waking the requesting thread.
+                        for (const auto& event : earlyEvents) HandleMessage(event);
+                    }
+                    request.promise->set_value(result);
+                } catch (...) {
+                    request.promise->set_exception(std::current_exception());
+                }
             }
         }
         return;
     }
     const std::string method = message.value("method", "");
+    if (method != "item/started" && method != "item/completed" && method != "turn/completed") return;
     const nlohmann::json& params = message.value("params", nlohmann::json::object());
     const auto jobId = FindJob(params);
     if (!jobId) return;
-    bool knownJob = false;
+    const auto& turn = params.value("turn", nlohmann::json::object());
+    const std::string nestedTurnId = turn.value("id", "");
+    const std::string turnId = params.value("turnId", nestedTurnId);
+    if (!nestedTurnId.empty() && nestedTurnId != turnId) return;
     {
         std::scoped_lock lock(stateMutex_);
         const auto found = jobs_.find(*jobId);
-        if (found != jobs_.end()) {
-            knownJob = true;
+        if (found == jobs_.end() || !found->second.busy) return;
+        auto& job = found->second;
+        if (job.turnStartPending) {
+            // A completion can arrive before the turn/start response. Wait for
+            // that authoritative ID instead of guessing which turn it belongs to.
+            auto routedMessage = message;
+            routedMessage["params"]["threadId"] = job.threadId;
+            job.pendingTurnEvents.push_back(std::move(routedMessage));
+            return;
         }
+        if (!turnId.empty() && turnId != job.activeTurnId) return;
     }
-    if (!knownJob) return;
     const auto pushForJob = [this, jobId](CodexEvent event) {
+        std::scoped_lock lock(stateMutex_);
+        if (!jobs_.contains(*jobId)) return;
         event.jobId = *jobId;
         PushEvent(std::move(event));
     };
@@ -741,7 +786,6 @@ void CodexBridge::HandleMessage(const nlohmann::json& message) {
                 found->second.activeTurnId.clear();
             }
         }
-        const auto& turn = params.value("turn", nlohmann::json::object());
         const std::string status = turn.value("status", "completed");
         if (status != "completed" && !generatedImageAccepted) {
             pushForJob({CodexEventType::Error, "Codex turn ended with status: " + status});
@@ -769,6 +813,11 @@ void CodexBridge::LogDiagnostic(const std::string_view message) {
 
 std::filesystem::path CodexBridge::CopyGeneratedImage(const std::uint64_t jobId,
                                                       const std::filesystem::path& source) {
+    // Finish an in-flight copy before Forget returns and the UI removes its
+    // directory. A forgotten job must never recreate that directory afterward.
+    std::scoped_lock stateLock(stateMutex_);
+    const auto found = jobs_.find(jobId);
+    if (found == jobs_.end() || !found->second.busy) return {};
     if (!std::filesystem::exists(source)) {
         CodexEvent event{CodexEventType::Error,
                          "ImageGen reported a path that does not exist."};
