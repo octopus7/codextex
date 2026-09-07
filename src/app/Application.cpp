@@ -421,7 +421,7 @@ void Application::Shutdown() {
 
     std::error_code error;
     const auto temp = std::filesystem::temp_directory_path(error);
-    if (!error && sessionDirectory_.parent_path() == temp &&
+    if (!error && !projectionTabs_.HasRecoveryFiles() && sessionDirectory_.parent_path() == temp &&
         sessionDirectory_.filename().wstring().starts_with(L"CodexTex-")) {
         std::filesystem::remove_all(sessionDirectory_, error);
     }
@@ -1177,15 +1177,19 @@ void Application::DrawTools() {
         if (!settingsMessage_.empty()) {
             ImGui::TextColored(ImVec4(1, 0.35f, 0.3f, 1), "%s", settingsMessage_.c_str());
         }
-        const bool canGenerate = meshLoaded_ && textureLoaded_ && codex_.IsAvailable() &&
+        const bool cleanupPending = codex_.IsClearingTemporaryFiles();
+        const bool canGenerate = !cleanupPending && meshLoaded_ && textureLoaded_ && codex_.IsAvailable() &&
                                  generationPrompt_[0] != '\0';
         ImGui::BeginDisabled(!canGenerate);
         if (ImGui::Button(Tr("Generate from current view"))) CreateProjectionTab(true);
         ImGui::EndDisabled();
         ImGui::SameLine();
-        ImGui::BeginDisabled(!meshLoaded_ || !textureLoaded_);
+        ImGui::BeginDisabled(cleanupPending || !meshLoaded_ || !textureLoaded_);
         if (ImGui::Button(Tr("External PNG from current view"))) CreateProjectionTab(false);
         ImGui::EndDisabled();
+        if (cleanupPending) {
+            ImGui::TextDisabled(Tr("Wait for temporary file cleanup before creating a projection."));
+        }
     } else {
         ImGui::SeparatorText(Tr("Projection workspace"));
         ImGui::TextColored(ImVec4(0.45f, 0.85f, 1, 1),
@@ -1302,7 +1306,8 @@ void Application::DrawTools() {
     if (!imageGenLogPath_.empty()) {
         ImGui::TextWrapped(Tr("ImageGen log: %s"), Narrow(imageGenLogPath_).c_str());
     }
-    if (!codex_.IsAvailable() && !codex_.IsStarting() && !codex_.IsBusy()) {
+    if (!codex_.IsAvailable() && !codex_.IsStarting() && !codex_.IsBusy() &&
+        !codex_.IsClearingTemporaryFiles()) {
         if (ImGui::Button(Tr("Retry Codex detection"))) {
             const bool started = codex_.Start(sessionDirectory_);
             NormalizeCodexSettings();
@@ -1405,7 +1410,7 @@ void Application::DrawSessionTemp() {
     if (ImGui::Button(Tr("Delete selected"))) DeleteTempFile(selectedTempFile_);
     ImGui::EndDisabled();
     ImGui::SameLine();
-    ImGui::BeginDisabled(tempFiles_.empty());
+    ImGui::BeginDisabled(tempFiles_.empty() || codex_.IsClearingTemporaryFiles());
     if (ImGui::Button(Tr("Delete all temp files"))) DeleteAllTempFiles();
     ImGui::EndDisabled();
 
@@ -1822,6 +1827,10 @@ bool Application::SaveTexture(const bool choosePath) {
 }
 
 bool Application::CreateProjectionTab(const bool generate) {
+    if (codex_.IsClearingTemporaryFiles()) {
+        SetStatus("Wait for temporary file cleanup before creating a projection.");
+        return false;
+    }
     if (!meshLoaded_ || !textureLoaded_) return false;
     std::fill(selectedFaces_.begin(), selectedFaces_.end(), 0);
     renderer_.SetSelectedFaces(selectedFaces_);
@@ -1865,8 +1874,7 @@ bool Application::CreateProjectionTab(const bool generate) {
     }
     tempFilesDirty_ = true;
     tab.mask.Resize(capture.Width(), capture.Height(), false);
-    projectionTabs_.push_back(std::move(tab));
-    ProjectionTab& created = projectionTabs_.back();
+    ProjectionTab& created = projectionTabs_.Add(std::move(tab));
     pendingProjectionSelection_ = created.id;
     ActivateProjectionTab(created);
     if (generate) {
@@ -1963,8 +1971,7 @@ void Application::NormalizeCodexSettings() {
 }
 
 Application::ProjectionTab* Application::FindProjectionTab(const std::uint64_t id) {
-    const auto found = std::ranges::find(projectionTabs_, id, &ProjectionTab::id);
-    return found == projectionTabs_.end() ? nullptr : &*found;
+    return projectionTabs_.Find(id);
 }
 
 Application::ProjectionTab* Application::ActiveProjectionTab() {
@@ -2027,16 +2034,16 @@ void Application::ActivateProjectionTab(ProjectionTab& tab) {
 }
 
 void Application::CloseProjectionTab(const std::uint64_t id) {
-    const auto found = std::ranges::find(projectionTabs_, id, &ProjectionTab::id);
-    if (found == projectionTabs_.end()) return;
-    codex_.Forget(id, !found->temporaryCleanupBlocked);
+    if (!projectionTabs_.Find(id)) return;
+    projectionTabs_.Erase(id, [this](ProjectionTab& tab) {
+        codex_.Forget(tab.id, !tab.temporaryCleanupBlocked);
+    });
     const bool wasActive = activeProjectionId_ == id;
     if (workingPreviewProjectionId_ == id) {
         renderer_.ClearWorkingProjectionPreview();
         workingPreviewProjectionId_.reset();
     }
     tempFilesDirty_ = true;
-    projectionTabs_.erase(found);
     if (wasActive) {
         activeProjectionId_.reset();
         rendererProjectionId_.reset();
@@ -2049,11 +2056,10 @@ void Application::CloseProjectionTab(const std::uint64_t id) {
 }
 
 void Application::ClearProjectionTabs() {
-    for (auto& tab : projectionTabs_) {
+    projectionTabs_.EraseAll([this](ProjectionTab& tab) {
         codex_.Forget(tab.id, !tab.temporaryCleanupBlocked);
-    }
+    });
     tempFilesDirty_ = true;
-    projectionTabs_.clear();
     renderer_.ClearWorkingProjectionPreview();
     workingPreviewProjectionId_.reset();
     activeProjectionId_.reset();
@@ -2248,7 +2254,7 @@ void Application::RedoTexture() {
 }
 
 void Application::CleanupProjectionTemp(ProjectionTab& tab) {
-    if (tab.temporaryDirectory.empty()) return;
+    if (tab.temporaryCleanupBlocked || tab.temporaryDirectory.empty()) return;
     if (!IsInsideDirectory(sessionDirectory_, tab.temporaryDirectory)) {
         SetStatus("Refused to clean a projection path outside the managed session folder.", true);
         return;
@@ -2269,6 +2275,9 @@ void Application::HandleCodexEvents() {
         ProjectionTab* tab = FindProjectionTab(event.jobId);
         if (!tab) {
             if (event.jobId == 0) {
+                if (event.type == CodexEventType::TemporaryFilesCleared) {
+                    projectionTabs_.ForgetRecoveryFiles();
+                }
                 tempFilesDirty_ = true;
                 SetStatus(event.message, event.type == CodexEventType::Error);
                 if (codex_.IsAvailable()) NormalizeCodexSettings();

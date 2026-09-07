@@ -321,3 +321,60 @@ TEST_CASE("Async shutdown preserves recovery entries and drains queued ordinary 
     CHECK_FALSE(std::filesystem::exists(capture.parent_path()));
     CHECK(std::filesystem::exists(recovery));
 }
+
+TEST_CASE("Async bulk cleanup gates new work until its completion event is consumed") {
+    MockSession session;
+    session.Set(L"CODEXTEX_MOCK_BLOCK_METHOD", L"turn/start");
+    codextex::AsyncCodexClient client;
+    StartReady(client, session);
+    REQUIRE(client.BeginGeneration(70, session.Capture(70), "old", "gpt-5.6-sol", "low"));
+    REQUIRE(WaitUntil([&] { return std::filesystem::exists(session.entered); }));
+    client.Forget(70, true);
+    REQUIRE(client.ClearTemporaryFiles());
+    CHECK(client.IsClearingTemporaryFiles());
+    CHECK_FALSE(client.ClearTemporaryFiles());
+    CHECK_FALSE(client.Start(session.directory, std::filesystem::path(CODEXTEX_MOCK_CODEX_PATH)));
+    const auto futureCapture = session.directory / "projection-71" / "capture.png";
+    CHECK_FALSE(client.BeginGeneration(71, futureCapture, "new", "gpt-5.6-sol", "low"));
+
+    SECTION("successful cleanup releases the gate at event handoff") {
+        session.Release();
+        REQUIRE(WaitUntil([&] { return std::filesystem::is_empty(session.directory); }));
+        CHECK(client.IsClearingTemporaryFiles());
+        CHECK_FALSE(client.BeginGeneration(71, futureCapture, "new", "gpt-5.6-sol", "low"));
+        const auto events = WaitForMessage(client, "Temporary files cleared.");
+        CHECK(std::ranges::any_of(events, [](const auto& event) {
+            return event.type == codextex::CodexEventType::TemporaryFilesCleared;
+        }));
+        CHECK_FALSE(client.IsClearingTemporaryFiles());
+        REQUIRE(client.BeginGeneration(71, session.Capture(71), "new", "gpt-5.6-sol", "low"));
+    }
+    SECTION("shutdown releases an unprocessed cleanup gate") {
+        client.Stop();
+        CHECK_FALSE(client.IsClearingTemporaryFiles());
+    }
+}
+
+TEST_CASE("Async failed bulk cleanup releases its gate after delivering the error") {
+    MockSession session;
+    codextex::AsyncCodexClient client;
+    StartReady(client, session);
+    const auto lockedPath = session.directory / "locked.tmp";
+    std::ofstream(lockedPath) << "locked";
+    struct FileLock {
+        HANDLE handle;
+        ~FileLock() { if (handle != INVALID_HANDLE_VALUE) CloseHandle(handle); }
+    } locked{CreateFileW(lockedPath.c_str(), GENERIC_READ, 0, nullptr, OPEN_EXISTING,
+                         FILE_ATTRIBUTE_NORMAL, nullptr)};
+    REQUIRE(locked.handle != INVALID_HANDLE_VALUE);
+    REQUIRE(client.ClearTemporaryFiles());
+    CHECK(client.IsClearingTemporaryFiles());
+    CHECK_FALSE(client.BeginGeneration(80, session.directory / "future.png", "new", "gpt-5.6-sol", "low"));
+    const auto events = WaitForMessage(client, "Could not safely clear all temporary files.");
+    CHECK(std::ranges::any_of(events, [](const auto& event) {
+        return event.type == codextex::CodexEventType::Error;
+    }));
+    CHECK_FALSE(client.IsClearingTemporaryFiles());
+    CHECK(std::filesystem::exists(lockedPath));
+    REQUIRE(client.BeginGeneration(80, session.Capture(80), "new", "gpt-5.6-sol", "low"));
+}

@@ -60,6 +60,10 @@ if it is not already present.
 7. All projection tabs bake into the same live working texture and see changes
    made by other tabs. Undo/redo is shared. Repeat as needed, then save the PNG.
 
+Texture history retains at most eight snapshots across undo and redo, within a
+256 MiB RGBA budget. Failed GPU updates leave history and the save point intact.
+Returning to the saved state clears the unsaved marker.
+
 The viewport starts in an unlit Base Color mode so PNG texels are displayed
 without lighting multiplication. `Neutral shading` is an optional display and
 capture aid. The first-run docking layout reserves the main central area for the
@@ -132,6 +136,10 @@ bounded text/binary preview. Files can be deleted individually, or the whole
 session directory can be cleared without removing the directory itself. Deleting
 a file used by a projection workspace closes that tab and cancels its AI task;
 clearing everything closes all projection tabs after an explicit confirmation.
+New projections are disabled until that cleanup reports completion or failure.
+If permanent archiving fails, recovery files remain in the session folder even
+after closing tabs or exiting the app. An explicit successful bulk deletion
+clears that recovery record.
 
 CodexTex launches the first Codex App Server it can resolve from a native
 `codex.exe`, an npm `codex.cmd` shim, or the versioned Codex desktop installation
@@ -159,6 +167,12 @@ round trips, manual mask operations and prompt construction, an in-process WARP 
 and a test-only JSONL App Server executable for signed-out, missing-skill,
 generation, concurrent per-tab job routing, and interrupt behavior. A real ImageGen E2E run
 still requires a locally authenticated ChatGPT Codex installation.
+
+Projection state and lifecycle live in `ProjectionWorkspace`, separately from
+the UI. Tests cover tab isolation and recovery retention, transactional texture
+history, real ImGui shortcut routing, and asynchronous request/cleanup races.
+The Windows workflow builds the Release GUI and runs the full suite on pushes
+and pull requests, with cached vcpkg binaries and archived test diagnostics.
 
 ## Scope
 

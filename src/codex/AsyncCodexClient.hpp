@@ -35,6 +35,7 @@ public:
     void Stop();
 
     [[nodiscard]] bool IsStarting() const;
+    [[nodiscard]] bool IsClearingTemporaryFiles() const;
     [[nodiscard]] bool IsRunning() const;
     [[nodiscard]] bool IsAvailable() const;
     [[nodiscard]] bool IsBusy() const;
@@ -69,7 +70,8 @@ private:
     void PublishState(bool initializationFinished = false);
     void AddEvent(CodexEvent event);
     void CleanupTemporaryFiles(std::uint64_t jobId);
-    bool RemoveTemporaryPath(const std::filesystem::path& path);
+    bool RemoveTemporaryPath(const std::filesystem::path& path,
+                             std::filesystem::path directory = {});
 
     CodexBridge bridge_;
     mutable std::mutex mutex_;
@@ -87,6 +89,8 @@ private:
     bool running_{};
     bool available_{};
     bool sessionStarted_{};
+    bool clearingTemporaryFiles_{};
+    bool clearCompletionPending_{};
     bool stopping_{};
     bool workerExited_{};
     std::thread worker_;

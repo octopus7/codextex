@@ -39,6 +39,7 @@ add_executable(CodexTex WIN32
   src/main.cpp
   src/app/Application.cpp
   src/app/KeyboardShortcuts.cpp
+  src/app/ProjectionWorkspace.cpp
   src/graphics/Renderer.cpp
   src/codex/CodexBridge.cpp
   src/codex/AsyncCodexClient.cpp
@@ -73,6 +74,7 @@ if(CODEXTEX_BUILD_TESTS)
   )
   add_executable(codextex_tests
     src/app/KeyboardShortcuts.cpp
+    src/app/ProjectionWorkspace.cpp
     src/codex/CodexBridge.cpp
     src/codex/AsyncCodexClient.cpp
     src/graphics/Renderer.cpp
@@ -81,6 +83,7 @@ if(CODEXTEX_BUILD_TESTS)
     tests/CodexBridgeTests.cpp
     tests/AsyncCodexClientTests.cpp
     tests/KeyboardShortcutsTests.cpp
+    tests/ProjectionWorkspaceTests.cpp
     tests/MeshTests.cpp
     tests/MaskTests.cpp
     tests/LocalizationTests.cpp

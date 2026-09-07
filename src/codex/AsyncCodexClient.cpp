@@ -14,7 +14,7 @@ AsyncCodexClient::~AsyncCodexClient() {
 bool AsyncCodexClient::Start(const std::filesystem::path& sessionDirectory,
                              const std::filesystem::path& executableOverride) {
     std::scoped_lock lock(mutex_);
-    if (stopping_ || starting_ || std::ranges::any_of(jobs_, [](const auto& entry) {
+    if (stopping_ || starting_ || clearingTemporaryFiles_ || std::ranges::any_of(jobs_, [](const auto& entry) {
             return entry.second.busy;
         })) return false;
     starting_ = true;
@@ -46,7 +46,7 @@ bool AsyncCodexClient::BeginGeneration(const std::uint64_t jobId,
                                        const std::string& model,
                                        const std::string& reasoningEffort) {
     std::scoped_lock lock(mutex_);
-    if (stopping_ || starting_ || !available_ || jobId == 0 || capturePath.empty() ||
+    if (stopping_ || starting_ || clearingTemporaryFiles_ || !available_ || jobId == 0 || capturePath.empty() ||
         userPrompt.empty() || model.empty() || reasoningEffort.empty() ||
         forgottenJobs_.contains(jobId) || jobs_.contains(jobId)) return false;
     jobs_.emplace(jobId, JobSnapshot{true, true});
@@ -115,8 +115,12 @@ bool AsyncCodexClient::DeleteTemporaryFile(const std::filesystem::path& path) {
 
 bool AsyncCodexClient::ClearTemporaryFiles() {
     std::scoped_lock lock(mutex_);
-    if (stopping_ || sessionDirectory_.empty()) return false;
-    commands_.push_back(Command{CommandType::ClearTemporaryFiles});
+    if (stopping_ || clearingTemporaryFiles_ || sessionDirectory_.empty()) return false;
+    Command command{CommandType::ClearTemporaryFiles};
+    command.path = sessionDirectory_;
+    commands_.push_back(std::move(command));
+    clearingTemporaryFiles_ = true;
+    clearCompletionPending_ = false;
     wake_.notify_one();
     return true;
 }
@@ -124,6 +128,11 @@ bool AsyncCodexClient::ClearTemporaryFiles() {
 bool AsyncCodexClient::IsStarting() const {
     std::scoped_lock lock(mutex_);
     return starting_;
+}
+
+bool AsyncCodexClient::IsClearingTemporaryFiles() const {
+    std::scoped_lock lock(mutex_);
+    return clearingTemporaryFiles_;
 }
 
 bool AsyncCodexClient::IsRunning() const {
@@ -173,6 +182,10 @@ std::vector<CodexEvent> AsyncCodexClient::PollEvents() {
             job.busy = false;
             job.idlePending = false;
         }
+    }
+    if (clearCompletionPending_) {
+        clearingTemporaryFiles_ = false;
+        clearCompletionPending_ = false;
     }
     return events;
 }
@@ -258,28 +271,30 @@ void AsyncCodexClient::Execute(const Command& command) {
         break;
     }
     case CommandType::ClearTemporaryFiles: {
-        std::filesystem::path directory;
-        {
-            std::scoped_lock lock(mutex_);
-            directory = sessionDirectory_;
-        }
+        const auto& directory = command.path;
         std::error_code error;
         bool removed = true;
         for (std::filesystem::directory_iterator iterator(directory, error), end;
              !error && iterator != end; iterator.increment(error)) {
-            if (!RemoveTemporaryPath(iterator->path())) removed = false;
+            if (!RemoveTemporaryPath(iterator->path(), directory)) removed = false;
         }
         removed = removed && !error;
-        AddEvent({removed ? CodexEventType::TemporaryFilesCleared : CodexEventType::Error,
-                  removed ? "Temporary files cleared." : "Could not safely clear all temporary files."});
+        {
+            std::scoped_lock lock(mutex_);
+            if (!stopping_) {
+                events_.push_back({removed ? CodexEventType::TemporaryFilesCleared : CodexEventType::Error,
+                    removed ? "Temporary files cleared." : "Could not safely clear all temporary files."});
+                clearCompletionPending_ = true;
+            }
+        }
         break;
     }
     }
 }
 
-bool AsyncCodexClient::RemoveTemporaryPath(const std::filesystem::path& path) {
-    std::filesystem::path directory;
-    {
+bool AsyncCodexClient::RemoveTemporaryPath(const std::filesystem::path& path,
+                                          std::filesystem::path directory) {
+    if (directory.empty()) {
         std::scoped_lock lock(mutex_);
         directory = sessionDirectory_;
     }
@@ -391,6 +406,9 @@ void AsyncCodexClient::WorkerLoop() {
                 std::scoped_lock lock(mutex_);
                 if (stopping_) continue;
                 if (command && command->type == CommandType::Start) starting_ = false;
+                if (command && command->type == CommandType::ClearTemporaryFiles) {
+                    clearCompletionPending_ = true;
+                }
                 if (command) {
                     if (const auto found = jobs_.find(command->jobId); found != jobs_.end()) {
                         found->second.startPending = false;
@@ -431,6 +449,7 @@ void AsyncCodexClient::Stop() {
         std::scoped_lock lock(mutex_);
         stopping_ = true;
         starting_ = running_ = available_ = false;
+        clearingTemporaryFiles_ = clearCompletionPending_ = false;
         commands_.clear();
         for (auto& [id, job] : jobs_) {
             (void)id;

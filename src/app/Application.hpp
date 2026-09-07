@@ -1,5 +1,6 @@
 #pragma once
 
+#include "app/ProjectionWorkspace.hpp"
 #include "codex/AsyncCodexClient.hpp"
 #include "core/AppSettings.hpp"
 #include "core/Localization.hpp"
@@ -33,7 +34,6 @@ public:
 
 private:
     enum class EditMode { Navigate, Face };
-    enum class ProjectionViewMode { Working, GeneratedFull, Original };
 
     void DrawUi();
     void DrawMenuBar();
@@ -43,7 +43,7 @@ private:
     void DrawTexturePreview();
     void DrawSessionTemp();
     void HandleCodexEvents();
-    struct ProjectionTab;
+    using ProjectionTab = ProjectionWorkspace;
     void HandleViewportInput(const Vec2& topLeft, const Vec2& size, ProjectionTab* tab,
                              bool hovered);
     void ApplyDpiScale(float scale);
@@ -114,44 +114,7 @@ private:
     };
     std::vector<ReferenceAsset> referenceAssets_;
 
-    struct ProjectionTab {
-        std::uint64_t id{};
-        Renderer::ProjectionFrame frame;
-        CameraState camera{};
-        std::vector<std::uint8_t> hiddenFaces;
-        TextureImage projectionImage;
-        bool projectionUploadPending{true};
-        MaskImage mask;
-        bool maskUploadPending{true};
-        std::filesystem::path capturePath;
-        std::filesystem::path temporaryDirectory;
-        std::filesystem::path projectionPath;
-        std::filesystem::path metadataPath;
-        std::string prompt;
-        std::string status = "Waiting for projection image.";
-        std::string model;
-        std::string reasoningEffort;
-        bool statusIsError{};
-        bool projectionLoaded{};
-        bool referenceAssetsVisible{true};
-        bool captureShadingEnabled{};
-        bool temporaryCleanupBlocked{};
-        std::array<float, 3> captureBackgroundColor{};
-        std::vector<std::pair<std::filesystem::path, std::filesystem::path>> referencePaths;
-        bool applied{};
-        ProjectionViewMode viewMode{ProjectionViewMode::Working};
-        ProjectionViewTransform displayTransform{};
-        Vec2 projectionOffsetPixels{};
-        float brushRadius{28.0f};
-        int featherRadius{16};
-        float maxAngleDegrees{75.0f};
-        LocalSideFilter localSideFilter{LocalSideFilter::Both};
-        std::uint64_t baseTextureRevision{};
-        std::optional<std::chrono::steady_clock::time_point> generationStartedAt;
-        std::optional<std::int64_t> generationDurationSeconds;
-        bool generationDurationRecorded{};
-    };
-    std::vector<ProjectionTab> projectionTabs_;
+    ProjectionWorkspaces projectionTabs_;
     std::optional<std::uint64_t> workingPreviewProjectionId_;
 
     struct TempFileInfo {

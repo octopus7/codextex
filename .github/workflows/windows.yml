@@ -1,0 +1,67 @@
+name: Windows build and tests
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  release:
+    runs-on: windows-2022
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Locate MSVC and vcpkg
+        run: |
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio/Installer/vswhere.exe'
+          $visualStudio = & $vswhere -latest -version '[17.0,18.0)' -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if (-not $visualStudio) { throw 'Visual Studio 2022 C++ tools are required.' }
+          $toolsets = Get-ChildItem -LiteralPath (Join-Path $visualStudio 'VC/Tools/MSVC') -Directory
+          if (-not ($toolsets | Where-Object Name -Like '14.44.*')) { throw 'Install MSVC 14.44 to match CMakePresets.json.' }
+          $vcpkgRoot = $env:VCPKG_INSTALLATION_ROOT
+          if (-not (Test-Path -LiteralPath (Join-Path $vcpkgRoot 'scripts/buildsystems/vcpkg.cmake'))) { throw 'vcpkg was not found.' }
+          "VCPKG_ROOT=$vcpkgRoot" >> $env:GITHUB_ENV
+          $binaryCache = Join-Path $env:RUNNER_TEMP 'codextex-vcpkg-cache'
+          New-Item -ItemType Directory -Path $binaryCache -Force | Out-Null
+          "VCPKG_DEFAULT_BINARY_CACHE=$binaryCache" >> $env:GITHUB_ENV
+
+      - name: Cache vcpkg binaries
+        uses: actions/cache@v6
+        with:
+          path: ${{ runner.temp }}/codextex-vcpkg-cache
+          key: windows-2022-msvc-14.44-${{ hashFiles('vcpkg.json', 'CMakePresets.json') }}
+
+      - name: Configure
+        run: cmake --preset windows-msvc
+
+      - name: Build GUI and tests
+        run: cmake --build --preset windows-msvc-release --parallel
+
+      - name: Test core, WARP and mock App Server
+        run: ctest --preset windows-msvc --output-junit test-results.xml
+
+      - name: Preserve test and configure diagnostics
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: windows-test-results
+          retention-days: 7
+          if-no-files-found: ignore
+          path: |
+            test-results.xml
+            build/test-results.xml
+            build/Testing/Temporary/*.log
+            build/CMakeFiles/CMakeConfigureLog.yaml
