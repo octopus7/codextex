@@ -461,10 +461,10 @@ f 5/1 6/2 7/3 8/4
     const auto referenceObjPath = directory / "front-reference.obj";
     std::ofstream referenceObj(referenceObjPath, std::ios::binary | std::ios::trunc);
     referenceObj << R"OBJ(
-v -0.8 -0.8 0.15
-v  0.8 -0.8 0.15
-v  0.8  0.8 0.15
-v -0.8  0.8 0.15
+v -0.35 -0.35 0.15
+v  0.35 -0.35 0.15
+v  0.35  0.35 0.15
+v -0.35  0.35 0.15
 vt 0 0
 vt 1 0
 vt 1 1
@@ -545,12 +545,202 @@ f 1/1 2/2 3/3 4/4
         CHECK(baked.Pixels()[i + 3] == 77);
         if (baked.Pixels()[i] > 180 && baked.Pixels()[i + 1] < 60) ++changed;
     }
-    CHECK(changed > 200);
+    CHECK(changed > 0);
     CHECK(changed < 700);
     const auto& pixels = baked.Pixels();
     CHECK(pixels[0] == 12);
     const std::size_t center = (16 * 32 + 16) * 4;
-    CHECK(pixels[center] > 180);
+    // The reference asset covered the center in the frozen capture.
+    CHECK(pixels[center] == 12);
+    CHECK(pixels[center + 1] == 24);
+    CHECK(pixels[center + 2] == 36);
+    renderer.Shutdown();
+}
+
+TEST_CASE("WARP frozen triangle IDs prevent baking occluded UV islands and reference-covered surfaces") {
+    HiddenWindow window;
+    REQUIRE(window.Get() != nullptr);
+    codextex::Renderer renderer;
+    std::string error;
+    REQUIRE(renderer.Initialize(window.Get(), error, true));
+
+    const auto directory = std::filesystem::temp_directory_path() / "codextex-tests";
+    std::filesystem::create_directories(directory);
+    const auto objPath = directory / "occluded-distinct-uv-islands.obj";
+    std::ofstream obj(objPath, std::ios::binary | std::ios::trunc);
+    obj << R"OBJ(
+v -1 -1 0
+v  1 -1 0
+v  1  1 0
+v -1  1 0
+v -1 -1 -0.2
+v  1 -1 -0.2
+v  1  1 -0.2
+v -1  1 -0.2
+vt 0 0
+vt 0.5 0
+vt 0.5 1
+vt 0 1
+vt 0.5 0
+vt 1 0
+vt 1 1
+vt 0.5 1
+f 1/1 2/2 3/3 4/4
+f 5/5 6/6 7/7 8/8
+)OBJ";
+    obj.close();
+    codextex::Mesh mesh;
+    REQUIRE(mesh.LoadObj(objPath, error));
+    REQUIRE(renderer.SetMesh(mesh, error));
+
+    std::vector<std::uint8_t> basePixels(64 * 64 * 4, 255);
+    for (std::size_t pixel = 0; pixel < basePixels.size(); pixel += 4) {
+        basePixels[pixel] = 12;
+        basePixels[pixel + 1] = 24;
+        basePixels[pixel + 2] = 36;
+        basePixels[pixel + 3] = 77;
+    }
+    codextex::TextureImage base;
+    base.Assign(64, 64, basePixels);
+    REQUIRE(renderer.SetWorkingTexture(base, error));
+
+    const auto referencePath = directory / "occluding-reference-quad.obj";
+    std::ofstream referenceObj(referencePath, std::ios::binary | std::ios::trunc);
+    referenceObj << R"OBJ(
+v -1.2 -1.2 0.1
+v  1.2 -1.2 0.1
+v  1.2  1.2 0.1
+v -1.2  1.2 0.1
+vt 0 0
+vt 1 0
+vt 1 1
+vt 0 1
+f 1/1 2/2 3/3 4/4
+)OBJ";
+    referenceObj.close();
+    codextex::Mesh reference;
+    REQUIRE(reference.LoadObj(referencePath, error));
+    REQUIRE(renderer.AddReferenceAsset(reference, base, error));
+
+    bool referenceVisible = false;
+    SECTION("An opaque main mesh hides the rear UV island") {}
+    SECTION("An opaque reference hides both UV islands") { referenceVisible = true; }
+    renderer.SetReferenceAssetsVisible(referenceVisible);
+    codextex::CameraState camera;
+    camera.pitch = 0;
+    camera.distance = 3;
+    renderer.RenderViewport(128, 128, camera);
+    const auto centerTriangle = renderer.PickTriangle(64, 64);
+    if (referenceVisible) CHECK(centerTriangle == UINT32_MAX);
+    else CHECK(centerTriangle < 2);
+
+    codextex::TextureImage capture;
+    codextex::Renderer::ProjectionFrame frame;
+    REQUIRE(renderer.CaptureFrame(camera, 128, 128, capture, frame, error));
+    REQUIRE(frame.Valid());
+    // Another tab can capture different occlusion without changing this frame.
+    renderer.SetReferenceAssetsVisible(!referenceVisible);
+    codextex::Renderer::ProjectionFrame otherFrame;
+    REQUIRE(renderer.CaptureFrame(camera, 128, 128, capture, otherFrame, error));
+    renderer.ClearFrozenFrame();
+    renderer.ActivateProjectionFrame(frame);
+
+    std::vector<std::uint8_t> redPixels(128 * 128 * 4, 255);
+    for (std::size_t pixel = 0; pixel < redPixels.size(); pixel += 4) {
+        redPixels[pixel] = 240;
+        redPixels[pixel + 1] = 10;
+        redPixels[pixel + 2] = 10;
+    }
+    codextex::TextureImage projection;
+    projection.Assign(128, 128, redPixels);
+    REQUIRE(renderer.SetProjectionImage(projection, error));
+    codextex::MaskImage mask;
+    mask.Resize(128, 128, true);
+    renderer.SetMask(mask, 0);
+    REQUIRE(renderer.RefreshWorkingProjectionPreview(75, error));
+    codextex::TextureImage uncommitted;
+    REQUIRE(renderer.ReadWorkingTexture(uncommitted, error));
+    CHECK(uncommitted.Pixels() == basePixels);
+    REQUIRE(renderer.BakeProjection(75, error));
+    codextex::TextureImage baked;
+    REQUIRE(renderer.ReadWorkingTexture(baked, error));
+
+    std::size_t changedFront = 0;
+    std::size_t changedRear = 0;
+    bool alphaPreserved = true;
+    for (std::uint32_t y = 0; y < 64; ++y) {
+        for (std::uint32_t x = 0; x < 64; ++x) {
+            const std::size_t pixel = (static_cast<std::size_t>(y) * 64 + x) * 4;
+            const bool changed = baked.Pixels()[pixel] != basePixels[pixel] ||
+                baked.Pixels()[pixel + 1] != basePixels[pixel + 1] ||
+                baked.Pixels()[pixel + 2] != basePixels[pixel + 2];
+            if (changed) ++(x < 32 ? changedFront : changedRear);
+            alphaPreserved = alphaPreserved && baked.Pixels()[pixel + 3] == 77;
+        }
+    }
+    CHECK(changedFront == (referenceVisible ? 0 : 2048));
+    CHECK(changedRear == 0);
+    CHECK(alphaPreserved);
+    renderer.Shutdown();
+}
+
+TEST_CASE("WARP bake keeps shared triangle edges filled on a sloped surface") {
+    HiddenWindow window;
+    REQUIRE(window.Get() != nullptr);
+    codextex::Renderer renderer;
+    std::string error;
+    REQUIRE(renderer.Initialize(window.Get(), error, true));
+    const auto directory = std::filesystem::temp_directory_path() / "codextex-tests";
+    std::filesystem::create_directories(directory);
+    const auto objPath = directory / "sloped-shared-edge-quad.obj";
+    std::ofstream obj(objPath, std::ios::binary | std::ios::trunc);
+    obj << R"OBJ(
+v -0.8 -0.8 -0.6
+v  0.8 -0.8  0.6
+v  0.8  0.8  0.6
+v -0.8  0.8 -0.6
+vt 0 0
+vt 1 0
+vt 1 1
+vt 0 1
+f 1/1 2/2 3/3 4/4
+)OBJ";
+    obj.close();
+    codextex::Mesh mesh;
+    REQUIRE(mesh.LoadObj(objPath, error));
+    REQUIRE(renderer.SetMesh(mesh, error));
+    std::vector<std::uint8_t> basePixels(257 * 257 * 4, 0);
+    for (std::size_t pixel = 3; pixel < basePixels.size(); pixel += 4) basePixels[pixel] = 93;
+    codextex::TextureImage base;
+    base.Assign(257, 257, basePixels);
+    REQUIRE(renderer.SetWorkingTexture(base, error));
+    codextex::CameraState camera;
+    camera.pitch = 0;
+    camera.distance = 3;
+    codextex::TextureImage capture;
+    codextex::Renderer::ProjectionFrame frame;
+    REQUIRE(renderer.CaptureFrame(camera, 64, 64, capture, frame, error));
+    std::vector<std::uint8_t> whitePixels(64 * 64 * 4, 255);
+    codextex::TextureImage projection;
+    projection.Assign(64, 64, whitePixels);
+    REQUIRE(renderer.SetProjectionImage(projection, error));
+    codextex::MaskImage mask;
+    mask.Resize(64, 64, true);
+    renderer.SetMask(mask, 0);
+    REQUIRE(renderer.BakeProjection(75, error));
+    codextex::TextureImage baked;
+    REQUIRE(renderer.ReadWorkingTexture(baked, error));
+    std::size_t unpaintedInterior = 0;
+    bool alphaPreserved = true;
+    for (std::uint32_t y = 8; y < 249; ++y) {
+        for (std::uint32_t x = 8; x < 249; ++x) {
+            const std::size_t pixel = (static_cast<std::size_t>(y) * 257 + x) * 4;
+            if (baked.Pixels()[pixel] < 250) ++unpaintedInterior;
+            alphaPreserved = alphaPreserved && baked.Pixels()[pixel + 3] == 93;
+        }
+    }
+    CHECK(unpaintedInterior == 0);
+    CHECK(alphaPreserved);
     renderer.Shutdown();
 }
 

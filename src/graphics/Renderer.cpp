@@ -142,6 +142,7 @@ cbuffer Constants : register(b0) {
 Texture2D<float4> projectionImage : register(t0);
 Texture2D<float> capturedDepth : register(t1);
 Texture2D<float> projectionMask : register(t2);
+Texture2D<uint> capturedTriangleIds : register(t3);
 SamplerState linearSampler : register(s0);
 
 struct VSInput {
@@ -156,6 +157,7 @@ struct VSOutput {
     float3 worldPosition : TEXCOORD1;
     float3 normal : TEXCOORD2;
     float3 localPosition : TEXCOORD3;
+    nointerpolation uint triangleId : TEXCOORD4;
 };
 VSOutput VSMain(VSInput input) {
     VSOutput output;
@@ -164,21 +166,56 @@ VSOutput VSMain(VSInput input) {
     output.worldPosition = mul(float4(input.position, 1.0), world).xyz;
     output.normal = normalize(mul(float4(input.normal, 0.0), world).xyz);
     output.localPosition = input.position;
+    output.triangleId = input.triangleId;
     return output;
 }
 float4 PSMain(VSOutput input) : SV_TARGET0 {
+    // NDC depth is affine in capture screen coordinates on a triangle. Compute
+    // its gradient before any discard so neighboring capture samples can be
+    // checked against this same plane without a camera-dependent depth bias.
+    const float3 ndc = input.captureClip.xyz / input.captureClip.w;
+    const float3 dx = ddx(ndc);
+    const float3 dy = ddy(ndc);
+    const float determinant = dx.x * dy.y - dx.y * dy.x;
+    const float2 depthGradient = abs(determinant) > 1.0e-20
+        ? float2(dx.z * dy.y - dy.z * dx.y, dy.z * dx.x - dx.z * dy.x) / determinant
+        : float2(0.0, 0.0);
     if (sideFilter.x > 0.5 && sideFilter.x < 1.5 && input.localPosition.x < sideFilter.y) discard;
     if (sideFilter.x > 1.5 && input.localPosition.x > sideFilter.y) discard;
     if (input.captureClip.w <= 0.0) discard;
-    const float3 ndc = input.captureClip.xyz / input.captureClip.w;
+    if (ndc.z < 0.0 || ndc.z > 1.0) discard;
     const float2 screenUv = float2(ndc.x * 0.5 + 0.5, -ndc.y * 0.5 + 0.5);
     if (any(screenUv < 0.0) || any(screenUv > 1.0)) discard;
     const float2 projectionUv = (screenUv - projectionRegion.xy) / projectionRegion.zw;
     if (any(projectionUv < 0.0) || any(projectionUv > 1.0)) discard;
     const float2 imageUv = projectionUv - projectionTransform.xy;
     if (any(imageUv < 0.0) || any(imageUv > 1.0)) discard;
-    const float sampledDepth = capturedDepth.SampleLevel(linearSampler, screenUv, 0);
-    if (abs(sampledDepth - ndc.z) > parameters.w) discard;
+    // Match an actual visible sample of this triangle. Use the four samples
+    // around the projected texel to avoid cracks at shared triangle edges;
+    // never bilinearly interpolate depth across an occlusion boundary.
+    const int2 dimensions = int2(parameters.xy);
+    const float2 samplePosition = screenUv * parameters.xy - 0.5;
+    const int2 firstSample = int2(floor(samplePosition));
+    const float2 fraction = frac(samplePosition);
+    bool visible = false;
+    [unroll]
+    for (int y = 0; y < 2; ++y) {
+        [unroll]
+        for (int x = 0; x < 2; ++x) {
+            const int2 pixel = firstSample + int2(x, y);
+            const float weight = (x == 0 ? 1.0 - fraction.x : fraction.x) *
+                                 (y == 0 ? 1.0 - fraction.y : fraction.y);
+            if (weight <= 0.0 || any(pixel < 0) || any(pixel >= dimensions)) continue;
+            if (capturedTriangleIds.Load(int3(pixel, 0)) != input.triangleId + 1) continue;
+            const float2 sampleUv = (float2(pixel) + 0.5) / parameters.xy;
+            const float2 sampleNdc = float2(sampleUv.x * 2.0 - 1.0, 1.0 - sampleUv.y * 2.0);
+            const float expectedDepth = ndc.z + dot(depthGradient, sampleNdc - ndc.xy);
+            const float sampledDepth = capturedDepth.Load(int3(pixel, 0));
+            // A small allowance for float interpolation and D32 rasterization.
+            visible = visible || abs(sampledDepth - expectedDepth) <= 2.0e-6;
+        }
+    }
+    if (!visible) discard;
     const float3 viewDirection = normalize(cameraPosition.xyz - input.worldPosition);
     if (dot(normalize(input.normal), viewDirection) < parameters.z) discard;
     const float mask = projectionMask.SampleLevel(linearSampler, projectionUv, 0);
@@ -1058,6 +1095,17 @@ bool Renderer::CaptureFrame(const CameraState& camera, const std::uint32_t width
                                               frozenColorRtv.GetAddressOf());
     }
 
+    D3D11_TEXTURE2D_DESC idDesc = colorDesc;
+    idDesc.Format = DXGI_FORMAT_R32_UINT;
+    idDesc.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
+    ComPtr<ID3D11RenderTargetView> frozenTriangleIdsRtv;
+    if (SUCCEEDED(hr)) hr = device_->CreateTexture2D(&idDesc, nullptr,
+                                                      frozenTriangleIds_.ReleaseAndGetAddressOf());
+    if (SUCCEEDED(hr)) hr = device_->CreateRenderTargetView(frozenTriangleIds_.Get(), nullptr,
+                                                            frozenTriangleIdsRtv.GetAddressOf());
+    if (SUCCEEDED(hr)) hr = device_->CreateShaderResourceView(frozenTriangleIds_.Get(), nullptr,
+                                                              frozenTriangleIdsSrv_.ReleaseAndGetAddressOf());
+
     D3D11_TEXTURE2D_DESC depthDesc = colorDesc;
     depthDesc.Format = DXGI_FORMAT_R32_TYPELESS;
     depthDesc.BindFlags = D3D11_BIND_DEPTH_STENCIL | D3D11_BIND_SHADER_RESOURCE;
@@ -1075,9 +1123,11 @@ bool Renderer::CaptureFrame(const CameraState& camera, const std::uint32_t width
     if (SUCCEEDED(hr)) hr = device_->CreateShaderResourceView(frozenDepth_.Get(), &srvDesc,
                                                               frozenDepthSrv_.ReleaseAndGetAddressOf());
     if (SUCCEEDED(hr)) {
-        ID3D11RenderTargetView* captureTarget = frozenColorRtv.Get();
-        context_->OMSetRenderTargets(1, &captureTarget, frozenDepthDsv.Get());
+        ID3D11RenderTargetView* captureTargets[]{frozenColorRtv.Get(), frozenTriangleIdsRtv.Get()};
+        context_->OMSetRenderTargets(2, captureTargets, frozenDepthDsv.Get());
+        const std::array<float, 4> zero{};
         context_->ClearRenderTargetView(frozenColorRtv.Get(), viewportBackgroundColor_.data());
+        context_->ClearRenderTargetView(frozenTriangleIdsRtv.Get(), zero.data());
         context_->ClearDepthStencilView(frozenDepthDsv.Get(), D3D11_CLEAR_DEPTH, 1.0f, 0);
         DrawScene(width, height, camera);
     }
@@ -1108,6 +1158,8 @@ bool Renderer::CaptureFrame(const CameraState& camera, const std::uint32_t width
     image = fullCapture.CenterCroppedSquare();
     frame.depth = frozenDepth_;
     frame.depthSrv = frozenDepthSrv_;
+    frame.triangleIds = frozenTriangleIds_;
+    frame.triangleIdsSrv = frozenTriangleIdsSrv_;
     frame.indexBuffer = frozenIndexBuffer_;
     frame.camera = frozenCamera_;
     frame.width = frozenWidth_;
@@ -1123,6 +1175,8 @@ void Renderer::ActivateProjectionFrame(const ProjectionFrame& frame) {
     frozenColor_.Reset();
     frozenDepth_ = frame.depth;
     frozenDepthSrv_ = frame.depthSrv;
+    frozenTriangleIds_ = frame.triangleIds;
+    frozenTriangleIdsSrv_ = frame.triangleIdsSrv;
     frozenIndexBuffer_ = frame.indexBuffer;
     frozenCamera_ = frame.camera;
     frozenWidth_ = frame.width;
@@ -1137,6 +1191,8 @@ void Renderer::ClearFrozenFrame() {
     frozenColor_.Reset();
     frozenDepth_.Reset();
     frozenDepthSrv_.Reset();
+    frozenTriangleIds_.Reset();
+    frozenTriangleIdsSrv_.Reset();
     frozenIndexBuffer_.Reset();
     frozenWidth_ = frozenHeight_ = frozenIndexCount_ = 0;
     frozenCropX_ = frozenCropY_ = frozenCropSize_ = 0;
@@ -1204,7 +1260,8 @@ bool Renderer::RefreshWorkingProjectionPreview(const float maxAngleDegrees,
 
 bool Renderer::RenderProjectionToTarget(ID3D11RenderTargetView* target,
                                         const float maxAngleDegrees, std::string& error) {
-    if (!target || !projectionSrv_ || !maskSrv_ || !frozenDepthSrv_ || !frozenIndexBuffer_) {
+    if (!target || !projectionSrv_ || !maskSrv_ || !frozenDepthSrv_ || !frozenTriangleIdsSrv_ ||
+        !frozenIndexBuffer_) {
         error = "Capture a view and provide a projection image and mask before baking.";
         return false;
     }
@@ -1228,7 +1285,6 @@ bool Renderer::RenderProjectionToTarget(ID3D11RenderTargetView* target,
     constants.parameters[1] = static_cast<float>(frozenHeight_);
     constants.parameters[2] = std::cos(std::clamp(maxAngleDegrees, 0.0f, 89.9f) *
                                        std::numbers::pi_v<float> / 180.0f);
-    constants.parameters[3] = 0.003f;
     constants.sideFilter[0] = static_cast<float>(localSideFilter_);
     constants.sideFilter[1] = localCenterX_;
     constants.projectionRegion[0] = static_cast<float>(frozenCropX_) / frozenWidth_;
@@ -1250,14 +1306,15 @@ bool Renderer::RenderProjectionToTarget(ID3D11RenderTargetView* target,
     context_->VSSetConstantBuffers(0, 1, constants_.GetAddressOf());
     context_->PSSetShader(bakePs_.Get(), nullptr, 0);
     context_->PSSetConstantBuffers(0, 1, constants_.GetAddressOf());
-    ID3D11ShaderResourceView* resources[]{projectionSrv_.Get(), frozenDepthSrv_.Get(), maskSrv_.Get()};
-    context_->PSSetShaderResources(0, 3, resources);
+    ID3D11ShaderResourceView* resources[]{projectionSrv_.Get(), frozenDepthSrv_.Get(), maskSrv_.Get(),
+                                         frozenTriangleIdsSrv_.Get()};
+    context_->PSSetShaderResources(0, 4, resources);
     context_->PSSetSamplers(0, 1, sampler_.GetAddressOf());
     const float blendFactor[4]{};
     context_->OMSetBlendState(bakeBlend_.Get(), blendFactor, 0xffffffffu);
     context_->DrawIndexed(frozenIndexCount_, 0, 0);
     context_->OMSetBlendState(nullptr, blendFactor, 0xffffffffu);
-    context_->PSSetShaderResources(0, 3, nullResources);
+    context_->PSSetShaderResources(0, 4, nullResources);
     context_->OMSetRenderTargets(0, nullptr, nullptr);
     context_->Flush();
     error.clear();

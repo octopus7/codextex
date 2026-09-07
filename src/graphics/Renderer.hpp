@@ -42,6 +42,8 @@ public:
     struct ProjectionFrame {
         Microsoft::WRL::ComPtr<ID3D11Texture2D> depth;
         Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> depthSrv;
+        Microsoft::WRL::ComPtr<ID3D11Texture2D> triangleIds;
+        Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> triangleIdsSrv;
         Microsoft::WRL::ComPtr<ID3D11Buffer> indexBuffer;
         CameraState camera{};
         std::uint32_t width{};
@@ -52,7 +54,8 @@ public:
         std::uint32_t indexCount{};
 
         [[nodiscard]] bool Valid() const noexcept {
-            return depthSrv != nullptr && indexBuffer != nullptr && width != 0 && height != 0;
+            return depthSrv != nullptr && triangleIdsSrv != nullptr && indexBuffer != nullptr &&
+                width != 0 && height != 0;
         }
     };
 
@@ -225,6 +228,8 @@ private:
     Microsoft::WRL::ComPtr<ID3D11Texture2D> frozenColor_;
     Microsoft::WRL::ComPtr<ID3D11Texture2D> frozenDepth_;
     Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> frozenDepthSrv_;
+    Microsoft::WRL::ComPtr<ID3D11Texture2D> frozenTriangleIds_;
+    Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> frozenTriangleIdsSrv_;
     CameraState frozenCamera_{};
     std::uint32_t frozenWidth_{};
     std::uint32_t frozenHeight_{};
