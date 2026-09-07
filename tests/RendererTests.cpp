@@ -145,6 +145,37 @@ f 1/1 2/2 3/3 4/4
     renderer.Shutdown();
 }
 
+TEST_CASE("WARP preserves the working texture and preview when replacement upload fails") {
+    HiddenWindow window;
+    REQUIRE(window.Get() != nullptr);
+    codextex::Renderer renderer;
+    std::string error;
+    REQUIRE(renderer.Initialize(window.Get(), error, true));
+    codextex::TextureImage original;
+    original.Assign(1, 1, std::array<std::uint8_t, 4>{12, 24, 36, 77});
+    REQUIRE(renderer.SetSourceAndWorkingTexture(original, error));
+    auto* originalView = renderer.WorkingTexture();
+
+    // Reject unsupported dimensions consistently, including on WARP drivers
+    // that accept textures larger than the application's D3D11 limit.
+    codextex::TextureImage oversized;
+    oversized.Assign(D3D11_REQ_TEXTURE2D_U_OR_V_DIMENSION + 1, 1,
+                     std::vector<std::uint8_t>((D3D11_REQ_TEXTURE2D_U_OR_V_DIMENSION + 1) * 4, 255));
+    REQUIRE_FALSE(renderer.SetWorkingTexture(oversized, error));
+    CHECK_FALSE(error.empty());
+    CHECK(renderer.WorkingTexture() == originalView);
+    codextex::TextureImage unchanged;
+    REQUIRE(renderer.ReadWorkingTexture(unchanged, error));
+    CHECK(unchanged.Pixels() == original.Pixels());
+
+    codextex::TextureImage replacement;
+    replacement.Assign(1, 1, std::array<std::uint8_t, 4>{100, 110, 120, 77});
+    REQUIRE(renderer.SetWorkingTexture(replacement, error));
+    REQUIRE(renderer.ReadWorkingTexture(unchanged, error));
+    CHECK(unchanged.Pixels() == replacement.Pixels());
+    renderer.Shutdown();
+}
+
 TEST_CASE("WARP projection viewport rerenders a zoomed source region") {
     HiddenWindow window;
     REQUIRE(window.Get() != nullptr);

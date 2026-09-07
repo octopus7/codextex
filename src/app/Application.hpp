@@ -7,6 +7,7 @@
 #include "core/ProjectionViewTransform.hpp"
 #include "core/Mesh.hpp"
 #include "core/TextureImage.hpp"
+#include "core/TextureHistory.hpp"
 #include "graphics/Renderer.hpp"
 
 #include <Windows.h>
@@ -14,7 +15,6 @@
 #include <array>
 #include <chrono>
 #include <cstdint>
-#include <deque>
 #include <filesystem>
 #include <optional>
 #include <string>
@@ -173,7 +173,6 @@ private:
     std::string settingsMessage_;
     bool meshLoaded_{};
     bool textureLoaded_{};
-    bool dirty_{};
     bool referenceAssetsVisible_{true};
     bool shadingEnabled_{};
     bool mainOriginalTexturePreview_{};
@@ -186,8 +185,7 @@ private:
     std::vector<std::uint8_t> hiddenFaces_;
     std::vector<std::uint8_t> selectedFaces_;
     std::vector<std::vector<std::uint8_t>> hiddenHistory_;
-    std::deque<TextureImage> undoTextures_;
-    std::deque<TextureImage> redoTextures_;
+    TextureHistory textureHistory_;
 
     EditMode editMode_{EditMode::Navigate};
     bool useLasso_{};

@@ -22,6 +22,7 @@ add_library(codextex_core
   src/core/Localization.cpp
   src/core/Mesh.cpp
   src/core/TextureImage.cpp
+  src/core/TextureHistory.cpp
   src/core/Mask.cpp
   src/core/PromptBuilder.cpp
 )
@@ -81,6 +82,7 @@ if(CODEXTEX_BUILD_TESTS)
     tests/ProjectionViewTransformTests.cpp
     tests/RendererTests.cpp
     tests/TextureImageTests.cpp
+    tests/TextureHistoryTests.cpp
   )
   target_link_libraries(codextex_tests PRIVATE
     codextex_core Catch2::Catch2WithMain d3d11 dxgi d3dcompiler

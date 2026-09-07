@@ -644,6 +644,13 @@ bool Renderer::UploadRgbaTexture(const TextureImage& image, const bool renderTar
         error = "PNG contains no pixels.";
         return false;
     }
+    if (image.Width() == 0 || image.Height() == 0 ||
+        image.Width() > D3D11_REQ_TEXTURE2D_U_OR_V_DIMENSION ||
+        image.Height() > D3D11_REQ_TEXTURE2D_U_OR_V_DIMENSION ||
+        image.Pixels().size() != static_cast<std::size_t>(image.Width()) * image.Height() * 4) {
+        error = "Texture dimensions or RGBA pixel storage are invalid.";
+        return false;
+    }
     D3D11_TEXTURE2D_DESC desc{};
     desc.Width = image.Width();
     desc.Height = image.Height();
@@ -654,13 +661,20 @@ bool Renderer::UploadRgbaTexture(const TextureImage& image, const bool renderTar
     desc.Usage = D3D11_USAGE_DEFAULT;
     desc.BindFlags = D3D11_BIND_SHADER_RESOURCE | (renderTarget ? D3D11_BIND_RENDER_TARGET : 0);
     D3D11_SUBRESOURCE_DATA data{image.Pixels().data(), image.Width() * 4, 0};
-    HRESULT hr = device_->CreateTexture2D(&desc, &data, texture.ReleaseAndGetAddressOf());
-    if (SUCCEEDED(hr)) hr = device_->CreateShaderResourceView(texture.Get(), nullptr, srv.ReleaseAndGetAddressOf());
-    if (SUCCEEDED(hr) && rtv) hr = device_->CreateRenderTargetView(texture.Get(), nullptr, rtv->ReleaseAndGetAddressOf());
+    ComPtr<ID3D11Texture2D> nextTexture;
+    ComPtr<ID3D11ShaderResourceView> nextSrv;
+    ComPtr<ID3D11RenderTargetView> nextRtv;
+    HRESULT hr = device_->CreateTexture2D(&desc, &data, nextTexture.GetAddressOf());
+    if (SUCCEEDED(hr)) hr = device_->CreateShaderResourceView(nextTexture.Get(), nullptr, nextSrv.GetAddressOf());
+    if (SUCCEEDED(hr) && rtv) hr = device_->CreateRenderTargetView(nextTexture.Get(), nullptr, nextRtv.GetAddressOf());
     if (FAILED(hr)) {
         error = HrError("Could not upload PNG to the GPU", hr);
         return false;
     }
+    texture = std::move(nextTexture);
+    srv = std::move(nextSrv);
+    if (rtv) *rtv = std::move(nextRtv);
+    error.clear();
     return true;
 }
 

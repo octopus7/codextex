@@ -28,7 +28,6 @@ namespace codextex {
 namespace {
 
 constexpr wchar_t kWindowClass[] = L"CodexTexWindow";
-constexpr std::size_t kUndoLimit = 8;
 constexpr std::uint32_t kOfflineCaptureSize = 1024;
 std::string Narrow(const std::filesystem::path& path) {
     const auto value = path.u8string();
@@ -428,7 +427,7 @@ void Application::Shutdown() {
 }
 
 bool Application::CanClose() {
-    if (!dirty_) return true;
+    if (!textureHistory_.IsDirty()) return true;
     const std::wstring prompt = Wide(Tr("Save the modified PNG texture before closing?"));
     const int choice = MessageBoxW(window_, prompt.c_str(),
                                    L"CodexTex", MB_ICONQUESTION | MB_YESNOCANCEL);
@@ -594,8 +593,8 @@ void Application::DrawMenuBar() {
         ImGui::EndMenu();
     }
     if (ImGui::BeginMenu(Tr("Edit"))) {
-        if (ImGui::MenuItem(Tr("Undo Texture"), "Ctrl+Z", false, !undoTextures_.empty())) UndoTexture();
-        if (ImGui::MenuItem(Tr("Redo Texture"), "Ctrl+Y", false, !redoTextures_.empty())) RedoTexture();
+        if (ImGui::MenuItem(Tr("Undo Texture"), "Ctrl+Z", false, textureHistory_.CanUndo())) UndoTexture();
+        if (ImGui::MenuItem(Tr("Redo Texture"), "Ctrl+Y", false, textureHistory_.CanRedo())) RedoTexture();
         ImGui::EndMenu();
     }
     if (ImGui::BeginMenu(Tr("Settings"))) {
@@ -1298,7 +1297,7 @@ void Application::DrawTools() {
         }
     }
 
-    ImGui::BeginDisabled(undoTextures_.empty());
+    ImGui::BeginDisabled(!textureHistory_.CanUndo());
     if (ImGui::Button(Tr("Undo"))) UndoTexture();
     ImGui::EndDisabled();
 
@@ -1623,7 +1622,7 @@ bool Application::OpenObj() {
 }
 
 bool Application::OpenTexture() {
-    if (dirty_ && !CanClose()) return false;
+    if (textureHistory_.IsDirty() && !CanClose()) return false;
     const auto path = OpenFileDialog("Open Base Color PNG", L"PNG image (*.png)\0*.png\0\0");
     if (path.empty()) return false;
     TextureImage image;
@@ -1638,9 +1637,7 @@ bool Application::OpenTexture() {
     mainOriginalTexturePreview_ = false;
     texturePath_ = path;
     textureLoaded_ = true;
-    dirty_ = false;
-    undoTextures_.clear();
-    redoTextures_.clear();
+    textureHistory_.Clear();
     ++textureRevision_;
     SetStatus("Texture PNG loaded.");
     RememberRecentPrimaryAssets();
@@ -1683,7 +1680,7 @@ bool Application::OpenRecentPrimaryAssets() {
         SetStatus("The last OBJ and texture files are no longer available.", true);
         return false;
     }
-    if (dirty_ && !CanClose()) return false;
+    if (textureHistory_.IsDirty() && !CanClose()) return false;
 
     const std::filesystem::path objPath = codexSettings_.recentObjPath;
     const std::filesystem::path texturePath = codexSettings_.recentTexturePath;
@@ -1711,14 +1708,12 @@ bool Application::OpenRecentPrimaryAssets() {
     texturePath_ = texturePath;
     meshLoaded_ = true;
     textureLoaded_ = true;
-    dirty_ = false;
     mainOriginalTexturePreview_ = false;
     renderer_.SetLocalSideFilter(LocalSideFilter::Both);
     hiddenFaces_.assign(mesh_.TriangleCount(), 0);
     selectedFaces_.assign(mesh_.TriangleCount(), 0);
     hiddenHistory_.clear();
-    undoTextures_.clear();
-    redoTextures_.clear();
+    textureHistory_.Clear();
     camera_.yaw = 0.0f;
     camera_.pitch = 0.15f;
     camera_.fovDegrees = 45.0f;
@@ -1820,7 +1815,7 @@ bool Application::SaveTexture(const bool choosePath) {
         return false;
     }
     texturePath_ = path;
-    dirty_ = false;
+    textureHistory_.MarkSaved();
     SetStatus("Texture PNG saved. No OBJ or project file was written.");
     return true;
 }
@@ -2162,14 +2157,12 @@ void Application::Bake(ProjectionTab& tab) {
         SetStatus(error, true);
         return;
     }
-    if (!renderer_.BakeProjection(tab.maxAngleDegrees, error)) {
+    if (!textureHistory_.ApplyChange(std::move(before), [&](std::string& bakeError) {
+            return renderer_.BakeProjection(tab.maxAngleDegrees, bakeError);
+        }, error)) {
         SetStatus(error, true);
         return;
     }
-    undoTextures_.push_back(std::move(before));
-    while (undoTextures_.size() > kUndoLimit) undoTextures_.pop_front();
-    redoTextures_.clear();
-    dirty_ = true;
     ++textureRevision_;
     tab.applied = true;
     workingPreviewProjectionId_.reset();
@@ -2180,35 +2173,35 @@ void Application::Bake(ProjectionTab& tab) {
 }
 
 void Application::UndoTexture() {
-    if (undoTextures_.empty()) return;
+    if (!textureHistory_.CanUndo()) return;
     TextureImage current;
     std::string error;
-    if (!renderer_.ReadWorkingTexture(current, error)) return;
-    redoTextures_.push_back(std::move(current));
-    TextureImage previous = std::move(undoTextures_.back());
-    undoTextures_.pop_back();
-    if (renderer_.SetWorkingTexture(previous, error)) {
-        workingPreviewProjectionId_.reset();
-        dirty_ = true;
-        ++textureRevision_;
-        SetStatus("Texture change undone.");
+    if (!renderer_.ReadWorkingTexture(current, error) ||
+        !textureHistory_.Undo(std::move(current), [&](const TextureImage& image, std::string& uploadError) {
+            return renderer_.SetWorkingTexture(image, uploadError);
+        }, error)) {
+        SetStatus(error, true);
+        return;
     }
+    workingPreviewProjectionId_.reset();
+    ++textureRevision_;
+    SetStatus("Texture change undone.");
 }
 
 void Application::RedoTexture() {
-    if (redoTextures_.empty()) return;
+    if (!textureHistory_.CanRedo()) return;
     TextureImage current;
     std::string error;
-    if (!renderer_.ReadWorkingTexture(current, error)) return;
-    undoTextures_.push_back(std::move(current));
-    TextureImage next = std::move(redoTextures_.back());
-    redoTextures_.pop_back();
-    if (renderer_.SetWorkingTexture(next, error)) {
-        workingPreviewProjectionId_.reset();
-        dirty_ = true;
-        ++textureRevision_;
-        SetStatus("Texture change redone.");
+    if (!renderer_.ReadWorkingTexture(current, error) ||
+        !textureHistory_.Redo(std::move(current), [&](const TextureImage& image, std::string& uploadError) {
+            return renderer_.SetWorkingTexture(image, uploadError);
+        }, error)) {
+        SetStatus(error, true);
+        return;
     }
+    workingPreviewProjectionId_.reset();
+    ++textureRevision_;
+    SetStatus("Texture change redone.");
 }
 
 void Application::CleanupProjectionTemp(ProjectionTab& tab) {
