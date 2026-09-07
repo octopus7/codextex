@@ -159,6 +159,7 @@ constexpr std::array kTranslations{
     Translation{"Projection baked into the working texture.", "作業テクスチャにプロジェクションをベイクしました。", "작업 텍스처에 프로젝션을 베이크했습니다."},
     Translation{"Texture change undone.", "テクスチャ変更を元に戻しました。", "텍스처 변경을 실행 취소했습니다."},
     Translation{"Texture change redone.", "テクスチャ変更をやり直しました。", "텍스처 변경을 다시 실행했습니다."},
+    Translation{"Could not upload the projection mask.", "プロジェクションマスクをアップロードできませんでした。", "프로젝션 마스크를 업로드하지 못했습니다."},
     Translation{"ImageGen result must be square to match the captured crop.", "ImageGen結果はキャプチャクロップに合わせた正方形である必要があります。", "ImageGen 결과는 캡처 크롭에 맞는 정사각형이어야 합니다."},
     Translation{"ImageGen result loaded; refine the mask before baking.", "ImageGen結果を読み込みました。ベイク前にマスクを調整してください。", "ImageGen 결과를 불러왔습니다. 베이크 전에 마스크를 다듬으세요."},
     Translation{"ImageGen result archived; refine the mask before baking.", "ImageGen結果を永続保存しました。ベイク前にマスクを調整してください。", "ImageGen 결과를 영구 저장했습니다. 베이크 전에 마스크를 다듬으세요."},

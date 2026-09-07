@@ -65,40 +65,60 @@ float SmoothStep(const float value) {
 } // namespace
 
 void MaskImage::Resize(const std::uint32_t width, const std::uint32_t height, const bool selected) {
+    if (width_ == width && height_ == height) {
+        Clear(selected);
+        return;
+    }
     width_ = width;
     height_ = height;
     binary_.assign(static_cast<std::size_t>(width) * height, selected ? 255 : 0);
     feathered_ = binary_;
+    ++revision_;
 }
 
-void MaskImage::Clear(const bool selected) {
-    std::fill(binary_.begin(), binary_.end(), selected ? 255 : 0);
+bool MaskImage::Clear(const bool selected) {
+    const std::uint8_t value = selected ? 255 : 0;
+    const bool changed = std::any_of(binary_.begin(), binary_.end(),
+                                    [value](const std::uint8_t pixel) { return pixel != value; });
+    if (changed) {
+        std::fill(binary_.begin(), binary_.end(), value);
+        ++revision_;
+    }
     feathered_ = binary_;
+    return changed;
 }
 
-void MaskImage::PaintCircle(const float x, const float y, const float radius, const bool include) {
+bool MaskImage::PaintCircle(const float x, const float y, const float radius, const bool include) {
     if (width_ == 0 || height_ == 0 || radius <= 0.0f) {
-        return;
+        return false;
     }
     const int minX = std::max(0, static_cast<int>(std::floor(x - radius)));
     const int maxX = std::min(static_cast<int>(width_) - 1, static_cast<int>(std::ceil(x + radius)));
     const int minY = std::max(0, static_cast<int>(std::floor(y - radius)));
     const int maxY = std::min(static_cast<int>(height_) - 1, static_cast<int>(std::ceil(y + radius)));
     const float radiusSquared = radius * radius;
+    const std::uint8_t value = include ? 255 : 0;
+    bool changed = false;
     for (int py = minY; py <= maxY; ++py) {
         for (int px = minX; px <= maxX; ++px) {
             const float dx = static_cast<float>(px) + 0.5f - x;
             const float dy = static_cast<float>(py) + 0.5f - y;
             if (dx * dx + dy * dy <= radiusSquared) {
-                binary_[static_cast<std::size_t>(py) * width_ + px] = include ? 255 : 0;
+                auto& pixel = binary_[static_cast<std::size_t>(py) * width_ + px];
+                if (pixel != value) {
+                    pixel = value;
+                    changed = true;
+                }
             }
         }
     }
+    if (changed) ++revision_;
+    return changed;
 }
 
-void MaskImage::ApplyLasso(const std::span<const Vec2> pixelPoints, const bool include) {
+bool MaskImage::ApplyLasso(const std::span<const Vec2> pixelPoints, const bool include) {
     if (pixelPoints.size() < 3 || width_ == 0 || height_ == 0) {
-        return;
+        return false;
     }
     float minX = static_cast<float>(width_);
     float maxX = 0.0f;
@@ -114,13 +134,21 @@ void MaskImage::ApplyLasso(const std::span<const Vec2> pixelPoints, const bool i
     const int x1 = std::clamp(static_cast<int>(std::ceil(maxX)), 0, static_cast<int>(width_) - 1);
     const int y0 = std::clamp(static_cast<int>(std::floor(minY)), 0, static_cast<int>(height_) - 1);
     const int y1 = std::clamp(static_cast<int>(std::ceil(maxY)), 0, static_cast<int>(height_) - 1);
+    const std::uint8_t value = include ? 255 : 0;
+    bool changed = false;
     for (int y = y0; y <= y1; ++y) {
         for (int x = x0; x <= x1; ++x) {
             if (PointInside(static_cast<float>(x) + 0.5f, static_cast<float>(y) + 0.5f, pixelPoints)) {
-                binary_[static_cast<std::size_t>(y) * width_ + x] = include ? 255 : 0;
+                auto& pixel = binary_[static_cast<std::size_t>(y) * width_ + x];
+                if (pixel != value) {
+                    pixel = value;
+                    changed = true;
+                }
             }
         }
     }
+    if (changed) ++revision_;
+    return changed;
 }
 
 void MaskImage::RecomputeInwardFeather(const int radiusPx) {

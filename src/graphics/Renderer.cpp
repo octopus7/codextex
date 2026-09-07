@@ -725,7 +725,7 @@ void Renderer::ClearSessionPreviewImage() {
     sessionPreviewTexture_.Reset();
 }
 
-bool Renderer::CreateMaskResources(const std::uint32_t width, const std::uint32_t height) {
+void Renderer::ClearMaskResources() {
     maskBinaryTexture_.Reset();
     maskBinarySrv_.Reset();
     maskTexture_.Reset();
@@ -737,7 +737,11 @@ bool Renderer::CreateMaskResources(const std::uint32_t width, const std::uint32_
         maskSeedUavs_[i].Reset();
     }
     maskWidth_ = maskHeight_ = 0;
+    workingProjectionPreviewEnabled_ = false;
+}
 
+bool Renderer::CreateMaskResources(const std::uint32_t width, const std::uint32_t height) {
+    ClearMaskResources();
     D3D11_TEXTURE2D_DESC desc{};
     desc.Width = width;
     desc.Height = height;
@@ -770,11 +774,7 @@ bool Renderer::CreateMaskResources(const std::uint32_t width, const std::uint32_
                                                                    maskSeedUavs_[i].GetAddressOf());
     }
     if (FAILED(hr)) {
-        maskBinaryTexture_.Reset();
-        maskBinarySrv_.Reset();
-        maskTexture_.Reset();
-        maskSrv_.Reset();
-        maskUav_.Reset();
+        ClearMaskResources();
         return false;
     }
     maskWidth_ = width;
@@ -782,15 +782,25 @@ bool Renderer::CreateMaskResources(const std::uint32_t width, const std::uint32_
     return true;
 }
 
-void Renderer::DispatchMaskFeather(const MaskImage& mask, const int featherRadius) {
+bool Renderer::DispatchMaskFeather(const MaskImage& mask, const int featherRadius) {
     context_->UpdateSubresource(maskBinaryTexture_.Get(), 0, nullptr, mask.Binary().data(),
                                 mask.Width(), 0);
     const UINT groupsX = (mask.Width() + 7) / 8;
     const UINT groupsY = (mask.Height() + 7) / 8;
+    ID3D11ShaderResourceView* nullSrvs[2]{};
+    ID3D11UnorderedAccessView* nullUavs[2]{};
+    const auto clearComputeBindings = [&] {
+        context_->CSSetUnorderedAccessViews(0, 2, nullUavs, nullptr);
+        context_->CSSetShaderResources(0, 2, nullSrvs);
+        ID3D11Buffer* nullBuffer = nullptr;
+        context_->CSSetConstantBuffers(0, 1, &nullBuffer);
+        context_->CSSetShader(nullptr, nullptr, 0);
+    };
 
     const auto updateConstants = [&](const std::uint32_t step) {
         D3D11_MAPPED_SUBRESOURCE mapped{};
         if (FAILED(context_->Map(maskConstants_.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped))) {
+            clearComputeBindings();
             return false;
         }
         const MaskConstants constants{mask.Width(), mask.Height(), step,
@@ -799,7 +809,7 @@ void Renderer::DispatchMaskFeather(const MaskImage& mask, const int featherRadiu
         context_->Unmap(maskConstants_.Get(), 0);
         return true;
     };
-    if (!updateConstants(0)) return;
+    if (!updateConstants(0)) return false;
 
     context_->CSSetConstantBuffers(0, 1, maskConstants_.GetAddressOf());
     context_->CSSetShader(maskInitCs_.Get(), nullptr, 0);
@@ -807,8 +817,6 @@ void Renderer::DispatchMaskFeather(const MaskImage& mask, const int featherRadiu
     context_->CSSetUnorderedAccessViews(0, 1, maskSeedUavs_[0].GetAddressOf(), nullptr);
     context_->Dispatch(groupsX, groupsY, 1);
 
-    ID3D11ShaderResourceView* nullSrvs[2]{};
-    ID3D11UnorderedAccessView* nullUavs[2]{};
     context_->CSSetUnorderedAccessViews(0, 1, nullUavs, nullptr);
     context_->CSSetShaderResources(0, 2, nullSrvs);
 
@@ -817,7 +825,7 @@ void Renderer::DispatchMaskFeather(const MaskImage& mask, const int featherRadiu
     step >>= 1;
     int source = 0;
     while (step > 0) {
-        if (!updateConstants(step)) return;
+        if (!updateConstants(step)) return false;
         const int destination = 1 - source;
         context_->CSSetShader(maskJumpCs_.Get(), nullptr, 0);
         context_->CSSetShaderResources(1, 1, maskSeedSrvs_[source].GetAddressOf());
@@ -829,32 +837,40 @@ void Renderer::DispatchMaskFeather(const MaskImage& mask, const int featherRadiu
         step >>= 1;
     }
 
-    if (!updateConstants(0)) return;
+    if (!updateConstants(0)) return false;
     ID3D11ShaderResourceView* finalSrvs[]{maskBinarySrv_.Get(), maskSeedSrvs_[source].Get()};
     context_->CSSetShader(maskFinalizeCs_.Get(), nullptr, 0);
     context_->CSSetShaderResources(0, 2, finalSrvs);
     context_->CSSetUnorderedAccessViews(1, 1, maskUav_.GetAddressOf(), nullptr);
     context_->Dispatch(groupsX, groupsY, 1);
-    context_->CSSetUnorderedAccessViews(1, 1, nullUavs, nullptr);
-    context_->CSSetShaderResources(0, 2, nullSrvs);
-    context_->CSSetShader(nullptr, nullptr, 0);
+    clearComputeBindings();
+    return SUCCEEDED(device_->GetDeviceRemovedReason());
 }
 
-void Renderer::SetMask(const MaskImage& mask, const int featherRadius) {
-    if (mask.Width() == 0 || mask.Height() == 0 || mask.Binary().empty()) {
-        maskBinaryTexture_.Reset();
-        maskBinarySrv_.Reset();
-        maskTexture_.Reset();
-        maskSrv_.Reset();
-        maskUav_.Reset();
-        maskWidth_ = maskHeight_ = 0;
-        return;
+bool Renderer::SetMask(const MaskImage& mask, const int featherRadius) {
+    if (mask.Width() == 0 || mask.Height() == 0) {
+        ClearMaskResources();
+        return true;
     }
-    if ((mask.Width() != maskWidth_ || mask.Height() != maskHeight_) &&
+    const std::size_t pixelCount = static_cast<std::size_t>(mask.Width()) * mask.Height();
+    if (!device_ || !context_ || !maskConstants_ || !maskInitCs_ || !maskJumpCs_ || !maskFinalizeCs_ ||
+        mask.Width() > D3D11_REQ_TEXTURE2D_U_OR_V_DIMENSION ||
+        mask.Height() > D3D11_REQ_TEXTURE2D_U_OR_V_DIMENSION || mask.Binary().size() != pixelCount) {
+        ClearMaskResources();
+        return false;
+    }
+    const bool resourcesReady = maskBinaryTexture_ && maskBinarySrv_ && maskTexture_ && maskSrv_ &&
+        maskUav_ && maskSeedTextures_[0] && maskSeedTextures_[1] &&
+        maskSeedSrvs_[0] && maskSeedSrvs_[1] && maskSeedUavs_[0] && maskSeedUavs_[1];
+    if ((mask.Width() != maskWidth_ || mask.Height() != maskHeight_ || !resourcesReady) &&
         !CreateMaskResources(mask.Width(), mask.Height())) {
-        return;
+        return false;
     }
-    DispatchMaskFeather(mask, featherRadius);
+    if (!DispatchMaskFeather(mask, featherRadius)) {
+        ClearMaskResources();
+        return false;
+    }
+    return true;
 }
 
 void Renderer::SetViewportBackgroundColor(const std::array<float, 3>& color) noexcept {

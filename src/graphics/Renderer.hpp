@@ -83,7 +83,9 @@ public:
         projectionOffset_[0] = normalizedX;
         projectionOffset_[1] = normalizedY;
     }
-    void SetMask(const MaskImage& mask, int featherRadius);
+    // Empty masks clear the GPU mask successfully. A failed update invalidates
+    // the GPU mask and its working preview; callers may retry the same input.
+    bool SetMask(const MaskImage& mask, int featherRadius);
     void SetHiddenFaces(std::span<const std::uint8_t> hidden);
     void SetSelectedFaces(std::span<const std::uint8_t> selected);
 
@@ -133,7 +135,8 @@ private:
     bool CreateShaders(std::string& error);
     bool CreateBufferResources(std::string& error);
     bool CreateMaskResources(std::uint32_t width, std::uint32_t height);
-    void DispatchMaskFeather(const MaskImage& mask, int featherRadius);
+    void ClearMaskResources();
+    bool DispatchMaskFeather(const MaskImage& mask, int featherRadius);
     bool UploadRgbaTexture(const TextureImage& image, bool renderTarget,
                            Microsoft::WRL::ComPtr<ID3D11Texture2D>& texture,
                            Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>& srv,

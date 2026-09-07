@@ -756,9 +756,11 @@ void Application::DrawViewport() {
                 }
                 const bool showOriginal = tab.viewMode == ProjectionViewMode::Original;
                 ProjectionPreviewMode previewMode = ProjectionPreviewMode::Disabled;
-                if (tab.projectionLoaded && tab.viewMode == ProjectionViewMode::GeneratedFull) {
+                if (tab.projectionLoaded && !tab.projectionUploadPending &&
+                    tab.viewMode == ProjectionViewMode::GeneratedFull) {
                     previewMode = ProjectionPreviewMode::Full;
-                } else if (tab.projectionLoaded && !tab.applied &&
+                } else if (tab.projectionLoaded && !tab.projectionUploadPending &&
+                           !tab.maskUploadPending && !tab.applied &&
                            tab.viewMode == ProjectionViewMode::Working) {
                     const bool hasUvPreview = workingPreviewProjectionId_ == tab.id &&
                         renderer_.HasWorkingProjectionPreview();
@@ -964,10 +966,11 @@ void Application::HandleViewportInput(const Vec2& topLeft, const Vec2& size, Pro
                                   ImGui::IsMouseDown(ImGuiMouseButton_Right);
             if (painting && insideCrop) {
                 const bool include = ImGui::IsMouseDown(ImGuiMouseButton_Left);
-                tab->mask.PaintCircle(sourceUv.x * tab->mask.Width(),
-                                      sourceUv.y * tab->mask.Height(),
-                                      tab->brushRadius * maskScale, include);
-                ApplyMaskChange(*tab);
+                if (tab->mask.PaintCircle(sourceUv.x * tab->mask.Width(),
+                                          sourceUv.y * tab->mask.Height(),
+                                          tab->brushRadius * maskScale, include)) {
+                    ApplyMaskChange(*tab);
+                }
             }
         } else {
             if (ImGui::IsMouseClicked(ImGuiMouseButton_Left) && insideCrop) {
@@ -986,8 +989,7 @@ void Application::HandleViewportInput(const Vec2& topLeft, const Vec2& size, Pro
                     maskPoints.push_back({pointSourceUv.x * tab->mask.Width(),
                                           pointSourceUv.y * tab->mask.Height()});
                 }
-                tab->mask.ApplyLasso(maskPoints, maskInclude_);
-                ApplyMaskChange(*tab);
+                if (tab->mask.ApplyLasso(maskPoints, maskInclude_)) ApplyMaskChange(*tab);
                 lassoActive_ = false;
             }
         }
@@ -1259,13 +1261,11 @@ void Application::DrawTools() {
             RefreshProjectionWorkingPreview(*tab);
         }
         if (ImGui::Button(Tr("Clear mask"))) {
-            tab->mask.Clear(false);
-            ApplyMaskChange(*tab);
+            if (tab->mask.Clear(false)) ApplyMaskChange(*tab);
         }
         ImGui::SameLine();
         if (ImGui::Button(Tr("Select all visible"))) {
-            tab->mask.Clear(true);
-            ApplyMaskChange(*tab);
+            if (tab->mask.Clear(true)) ApplyMaskChange(*tab);
         }
         if (ImGui::SliderFloat(Tr("Max surface angle"), &tab->maxAngleDegrees,
                                0.0f, 89.0f, "%.0f deg")) {
@@ -1742,6 +1742,7 @@ bool Application::OpenProjection(ProjectionTab& tab) {
         return false;
     }
     tab.projectionImage = std::move(image);
+    tab.projectionUploadPending = activeProjectionId_ != tab.id;
     tab.projectionPath = path;
     tab.projectionLoaded = true;
     tab.status = "External projection PNG loaded.";
@@ -1993,7 +1994,14 @@ void Application::ActivateProjectionTab(ProjectionTab& tab) {
     const float maskHeight = static_cast<float>(std::max(tab.mask.Height(), 1u));
     renderer_.SetProjectionOffset(tab.projectionOffsetPixels.x / maskWidth,
                                   tab.projectionOffsetPixels.y / maskHeight);
-    if (rendererProjectionId_ == tab.id) return;
+    if (rendererProjectionId_ == tab.id) {
+        if (tab.projectionLoaded && (tab.projectionUploadPending || tab.maskUploadPending)) {
+            if (UploadProjectionMask(tab) && UploadProjectionImage(tab) && !tab.applied) {
+                RefreshProjectionWorkingPreview(tab);
+            }
+        }
+        return;
+    }
     rendererProjectionId_ = tab.id;
     renderer_.ActivateProjectionFrame(tab.frame);
     renderer_.SetHiddenFaces(tab.hiddenFaces);
@@ -2001,13 +2009,14 @@ void Application::ActivateProjectionTab(ProjectionTab& tab) {
     renderer_.SetSelectedFaces(none);
     renderer_.SetReferenceAssetsVisible(tab.referenceAssetsVisible);
     renderer_.SetLocalSideFilter(tab.localSideFilter);
-    renderer_.SetMask(tab.mask, tab.featherRadius);
-    std::string error;
-    if (tab.projectionLoaded && renderer_.SetProjectionImage(tab.projectionImage, error)) {
-        if (!tab.applied && RefreshProjectionWorkingPreview(tab)) {
+    tab.maskUploadPending = true;
+    tab.projectionUploadPending = true;
+    const bool maskReady = UploadProjectionMask(tab);
+    if (tab.projectionLoaded && UploadProjectionImage(tab)) {
+        if (maskReady && !tab.applied && RefreshProjectionWorkingPreview(tab)) {
             renderer_.SetProjectionPreviewMode(ProjectionPreviewMode::Disabled);
         } else {
-            renderer_.SetProjectionPreviewMode(!tab.applied
+            renderer_.SetProjectionPreviewMode(maskReady && !tab.applied
                 ? ProjectionPreviewMode::Masked : ProjectionPreviewMode::Disabled);
         }
     } else {
@@ -2119,19 +2128,49 @@ void Application::ShowAllFaces() {
 }
 
 void Application::ApplyMaskChange(ProjectionTab& tab) {
+    tab.maskUploadPending = true;
     if (activeProjectionId_ != tab.id) return;
-    renderer_.SetMask(tab.mask, tab.featherRadius);
     RefreshProjectionWorkingPreview(tab);
+}
+
+bool Application::UploadProjectionMask(ProjectionTab& tab) {
+    if (!tab.maskUploadPending) return true;
+    if (!renderer_.SetMask(tab.mask, tab.featherRadius)) {
+        tab.status = "Could not upload the projection mask.";
+        tab.statusIsError = true;
+        renderer_.ClearWorkingProjectionPreview();
+        workingPreviewProjectionId_.reset();
+        renderer_.SetProjectionPreviewMode(ProjectionPreviewMode::Disabled);
+        return false;
+    }
+    tab.maskUploadPending = false;
+    return true;
+}
+
+bool Application::UploadProjectionImage(ProjectionTab& tab) {
+    if (!tab.projectionLoaded) return false;
+    if (!tab.projectionUploadPending) return true;
+    std::string error;
+    if (!renderer_.SetProjectionImage(tab.projectionImage, error)) {
+        tab.status = error;
+        tab.statusIsError = true;
+        renderer_.ClearWorkingProjectionPreview();
+        workingPreviewProjectionId_.reset();
+        renderer_.SetProjectionPreviewMode(ProjectionPreviewMode::Disabled);
+        return false;
+    }
+    tab.projectionUploadPending = false;
+    return true;
 }
 
 bool Application::RefreshProjectionWorkingPreview(ProjectionTab& tab) {
     if (rendererProjectionId_ != tab.id || !tab.projectionLoaded || tab.applied) return false;
+    if (!UploadProjectionMask(tab) || !UploadProjectionImage(tab)) return false;
     const float maskWidth = static_cast<float>(std::max(tab.mask.Width(), 1u));
     const float maskHeight = static_cast<float>(std::max(tab.mask.Height(), 1u));
     renderer_.SetProjectionOffset(tab.projectionOffsetPixels.x / maskWidth,
                                   tab.projectionOffsetPixels.y / maskHeight);
     renderer_.SetLocalSideFilter(tab.localSideFilter);
-    renderer_.SetMask(tab.mask, tab.featherRadius);
     std::string error;
     if (!renderer_.RefreshWorkingProjectionPreview(tab.maxAngleDegrees, error)) {
         if (workingPreviewProjectionId_ == tab.id) {
@@ -2149,6 +2188,10 @@ bool Application::RefreshProjectionWorkingPreview(ProjectionTab& tab) {
 
 void Application::Bake(ProjectionTab& tab) {
     ActivateProjectionTab(tab);
+    if (!UploadProjectionMask(tab) || !UploadProjectionImage(tab)) {
+        SetStatus(tab.status, true);
+        return;
+    }
     TextureImage before;
     std::string error;
     if (!renderer_.ReadWorkingTexture(before, error)) {
@@ -2184,6 +2227,7 @@ void Application::UndoTexture() {
     workingPreviewProjectionId_.reset();
     ++textureRevision_;
     SetStatus("Texture change undone.");
+    if (ProjectionTab* tab = ActiveProjectionTab()) RefreshProjectionWorkingPreview(*tab);
 }
 
 void Application::RedoTexture() {
@@ -2200,6 +2244,7 @@ void Application::RedoTexture() {
     workingPreviewProjectionId_.reset();
     ++textureRevision_;
     SetStatus("Texture change redone.");
+    if (ProjectionTab* tab = ActiveProjectionTab()) RefreshProjectionWorkingPreview(*tab);
 }
 
 void Application::CleanupProjectionTemp(ProjectionTab& tab) {
@@ -2285,12 +2330,8 @@ void Application::HandleCodexEvents() {
             codex_.FinishAfterGeneratedImage(tab->id, true);
             tab->capturePath.clear();
             tab->temporaryDirectory.clear();
-            if (activeProjectionId_ == tab->id && !renderer_.SetProjectionImage(image, error)) {
-                tab->status = error;
-                tab->statusIsError = true;
-                continue;
-            }
             tab->projectionImage = std::move(image);
+            tab->projectionUploadPending = true;
             tab->projectionLoaded = true;
             tab->status = "ImageGen result archived; refine the mask before baking.";
             tab->statusIsError = false;

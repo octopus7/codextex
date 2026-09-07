@@ -56,6 +56,89 @@ TEST_CASE("D3D11 WARP initializes viewport bake and GPU mask shaders") {
     renderer.Shutdown();
 }
 
+TEST_CASE("GPU mask updates report an unavailable renderer and allow an explicit clear") {
+    codextex::Renderer renderer;
+    codextex::MaskImage mask;
+    mask.Resize(4, 4, true);
+    CHECK_FALSE(renderer.SetMask(mask, 0));
+    CHECK(renderer.SetMask(codextex::MaskImage{}, 0));
+}
+
+TEST_CASE("WARP failed mask updates block stale baking and recover at the previous dimensions") {
+    HiddenWindow window;
+    REQUIRE(window.Get() != nullptr);
+    codextex::Renderer renderer;
+    std::string error;
+    REQUIRE(renderer.Initialize(window.Get(), error, true));
+    const auto directory = std::filesystem::temp_directory_path() / "codextex-tests";
+    std::filesystem::create_directories(directory);
+    const auto objPath = directory / "mask-upload-retry-quad.obj";
+    std::ofstream obj(objPath, std::ios::binary | std::ios::trunc);
+    obj << R"OBJ(
+v -1 -1 0
+v  1 -1 0
+v  1  1 0
+v -1  1 0
+vt 0 0
+vt 1 0
+vt 1 1
+vt 0 1
+f 1/1 2/2 3/3 4/4
+)OBJ";
+    obj.close();
+    codextex::Mesh mesh;
+    REQUIRE(mesh.LoadObj(objPath, error));
+    REQUIRE(renderer.SetMesh(mesh, error));
+    std::vector<std::uint8_t> basePixels(8 * 8 * 4, 77);
+    codextex::TextureImage base;
+    base.Assign(8, 8, basePixels);
+    REQUIRE(renderer.SetWorkingTexture(base, error));
+    codextex::CameraState camera;
+    camera.pitch = 0;
+    camera.distance = 3;
+    codextex::TextureImage capture;
+    codextex::Renderer::ProjectionFrame frame;
+    REQUIRE(renderer.CaptureFrame(camera, 64, 64, capture, frame, error));
+    std::vector<std::uint8_t> whitePixels(8 * 8 * 4, 255);
+    codextex::TextureImage projection;
+    projection.Assign(8, 8, whitePixels);
+    REQUIRE(renderer.SetProjectionImage(projection, error));
+    codextex::MaskImage mask;
+    mask.Resize(64, 64, true);
+    REQUIRE(renderer.SetMask(mask, 0));
+    REQUIRE(renderer.RefreshWorkingProjectionPreview(75, error));
+    REQUIRE(renderer.HasWorkingProjectionPreview());
+
+    // Exceed the documented D3D11 dimension limit without allocating a huge mask.
+    codextex::MaskImage invalid;
+    invalid.Resize(D3D11_REQ_TEXTURE2D_U_OR_V_DIMENSION + 1, 1, true);
+    CHECK_FALSE(renderer.SetMask(invalid, 0));
+    CHECK_FALSE(renderer.HasWorkingProjectionPreview());
+    CHECK_FALSE(renderer.BakeProjection(75, error));
+    CHECK_FALSE(renderer.RefreshWorkingProjectionPreview(75, error));
+    CHECK_FALSE(renderer.SetMask(invalid, 0));
+    codextex::TextureImage unchanged;
+    REQUIRE(renderer.ReadWorkingTexture(unchanged, error));
+    CHECK(unchanged.Pixels() == basePixels);
+
+    mask.Clear(false);
+    REQUIRE(renderer.SetMask(mask, 0));
+    REQUIRE(renderer.BakeProjection(75, error));
+    REQUIRE(renderer.ReadWorkingTexture(unchanged, error));
+    CHECK(unchanged.Pixels() == basePixels);
+    mask.Clear(true);
+    REQUIRE(renderer.SetMask(mask, 0));
+    REQUIRE(renderer.BakeProjection(75, error));
+    codextex::TextureImage painted;
+    REQUIRE(renderer.ReadWorkingTexture(painted, error));
+    const std::size_t center = (4 * 8 + 4) * 4;
+    CHECK(painted.Pixels()[center] == 255);
+    CHECK(painted.Pixels()[center + 3] == 77);
+    CHECK(renderer.SetMask(codextex::MaskImage{}, 0));
+    CHECK_FALSE(renderer.BakeProjection(75, error));
+    renderer.Shutdown();
+}
+
 TEST_CASE("WARP viewport shares the working texture and can preview the loaded original") {
     HiddenWindow window;
     REQUIRE(window.Get() != nullptr);

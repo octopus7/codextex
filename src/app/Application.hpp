@@ -77,6 +77,8 @@ private:
     void UndoHiddenFaces();
     void ShowAllFaces();
     void ApplyMaskChange(ProjectionTab& tab);
+    bool UploadProjectionMask(ProjectionTab& tab);
+    bool UploadProjectionImage(ProjectionTab& tab);
     bool RefreshProjectionWorkingPreview(ProjectionTab& tab);
     void Bake(ProjectionTab& tab);
     void UndoTexture();
@@ -118,7 +120,9 @@ private:
         CameraState camera{};
         std::vector<std::uint8_t> hiddenFaces;
         TextureImage projectionImage;
+        bool projectionUploadPending{true};
         MaskImage mask;
+        bool maskUploadPending{true};
         std::filesystem::path capturePath;
         std::filesystem::path temporaryDirectory;
         std::filesystem::path projectionPath;

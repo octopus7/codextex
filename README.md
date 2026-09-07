@@ -142,6 +142,9 @@ Mask feathering runs as a Direct3D 11 jump-flood compute pass. The binary lasso
 or brush mask remains authoritative, so feathering only reduces alpha inward;
 the frozen depth, visible-face set, and front-facing angle test are applied
 again during the UV-space bake.
+Unchanged brush/lasso strokes skip GPU updates. Each mask or feather change
+uploads once; projection shifts, angle changes, and side filters reuse the mask.
+Switching tabs restores their masks, and failed uploads remain pending for retry.
 
 Codex initialization, generation requests, cancellation, and reconnection run on
 a background command queue. Closing a projection discards its subsequent events;
