@@ -108,6 +108,11 @@ and hidden-face snapshot in a read-only source panel. Primary OBJ/texture loadin
 is available only from `Main Viewport`; inference reference OBJ + PNG pairs can
 still be added, removed, or toggled from either context.
 
+Ctrl+O opens an OBJ, Ctrl+T opens a texture, Ctrl+S saves the working texture,
+and Ctrl+Z/Y undo and redo texture changes. Shortcuts follow the menu's enabled
+state; opening primary assets is limited to the main viewport. Text fields keep
+their own Ctrl+Z/Y behavior, and holding a shortcut does not repeat the action.
+
 For overlapping or mirrored UV layouts, `Mirrored UV side` can exclude either
 the OBJ's local `-X` or `+X` side from projection preview and baking. This stops
 the opposite projection from overwriting the same UV region. Because both model

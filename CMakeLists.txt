@@ -38,6 +38,7 @@ target_link_libraries(codextex_core
 add_executable(CodexTex WIN32
   src/main.cpp
   src/app/Application.cpp
+  src/app/KeyboardShortcuts.cpp
   src/graphics/Renderer.cpp
   src/codex/CodexBridge.cpp
   src/codex/AsyncCodexClient.cpp
@@ -71,6 +72,7 @@ if(CODEXTEX_BUILD_TESTS)
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/mock-codex"
   )
   add_executable(codextex_tests
+    src/app/KeyboardShortcuts.cpp
     src/codex/CodexBridge.cpp
     src/codex/AsyncCodexClient.cpp
     src/graphics/Renderer.cpp
@@ -78,6 +80,7 @@ if(CODEXTEX_BUILD_TESTS)
     tests/GenerationArchiveTests.cpp
     tests/CodexBridgeTests.cpp
     tests/AsyncCodexClientTests.cpp
+    tests/KeyboardShortcutsTests.cpp
     tests/MeshTests.cpp
     tests/MaskTests.cpp
     tests/LocalizationTests.cpp
@@ -88,7 +91,7 @@ if(CODEXTEX_BUILD_TESTS)
     tests/TextureHistoryTests.cpp
   )
   target_link_libraries(codextex_tests PRIVATE
-    codextex_core Catch2::Catch2WithMain d3d11 dxgi d3dcompiler
+    codextex_core Catch2::Catch2WithMain imgui::imgui d3d11 dxgi d3dcompiler
   )
   target_compile_definitions(codextex_tests PRIVATE
     CODEXTEX_MOCK_CODEX_PATH="$<TARGET_FILE:codextex_mock_codex>"

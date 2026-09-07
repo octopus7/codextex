@@ -1,4 +1,5 @@
 #include "app/Application.hpp"
+#include "app/KeyboardShortcuts.hpp"
 #include "core/GenerationArchive.hpp"
 
 #include <imgui.h>
@@ -552,6 +553,18 @@ bool Application::SelectUiLanguage(const UiLanguage language) {
 }
 
 void Application::DrawUi() {
+    const KeyboardShortcutContext shortcutContext{
+        !activeProjectionId_.has_value(), textureLoaded_,
+        textureHistory_.CanUndo(), textureHistory_.CanRedo()};
+    for (const KeyboardCommand command : PollKeyboardShortcuts(shortcutContext)) {
+        switch (command) {
+        case KeyboardCommand::OpenObj: OpenObj(); break;
+        case KeyboardCommand::OpenTexture: OpenTexture(); break;
+        case KeyboardCommand::SaveTexture: SaveTexture(false); break;
+        case KeyboardCommand::UndoTexture: UndoTexture(); break;
+        case KeyboardCommand::RedoTexture: RedoTexture(); break;
+        }
+    }
     DrawMenuBar();
     const ImGuiViewport* mainViewport = ImGui::GetMainViewport();
     const ImGuiID dockspace = ImGui::DockSpaceOverViewport(0, mainViewport);
